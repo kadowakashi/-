@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>さけいちず</title>
+  <title>さけいちず v1.2</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="style.css">
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -14,7 +14,7 @@
     <div>
       <p class="eyebrow">地図と日記で残す飲み歩き記録</p>
       <h1>さけいちず</h1>
-      <p class="app-version">さけいちず v1.1</p>
+      <p class="app-version">さけいちず v1.2</p>
     </div>
     <button id="locateButton" class="button secondary locate-button" type="button">現在地を取得</button>
   </header>
@@ -157,6 +157,10 @@
             <h3>おすすめ度別</h3>
             <div id="sakeRatingStats" class="mini-list"></div>
           </div>
+          <div>
+            <h3>飲み物杯数</h3>
+            <div id="drinkCountStats" class="mini-list"></div>
+          </div>
         </div>
       </details>
 
@@ -274,6 +278,25 @@
         店名
         <input id="spotName" type="text" placeholder="例：秋田の酒場" required>
       </label>
+      <div id="mapCandidatePanel" class="map-candidate-panel quick-field" hidden>
+        <h3>地図クリック候補</h3>
+        <p id="mapCandidateStatus" class="hint">候補を取得しています。</p>
+        <p class="candidate-line">候補：<strong id="mapCandidateName">未取得</strong></p>
+        <p class="candidate-line">住所：<span id="mapCandidateAddress">未取得</span></p>
+        <div class="button-row candidate-actions">
+          <button id="applyCandidateNameButton" class="small-button" type="button">候補を店名に反映</button>
+          <a id="googleMapsLink" class="small-button link-like" href="#" target="_blank" rel="noopener">Googleマップで確認</a>
+        </div>
+      </div>
+      <label class="quick-field">
+        住所
+        <input id="spotAddress" type="text" placeholder="地図クリック候補から取得、または手入力">
+      </label>
+      <div class="form-subsection drink-count-section quick-field">
+        <h3>飲み物カウント</h3>
+        <p class="hint">＋/−で杯数を記録できます。0杯の項目は保存されません。</p>
+        <div id="drinkCountControls" class="drink-count-controls"></div>
+      </div>
       <label class="quick-field">
         飲んだもの
         <input id="drinks" type="text" placeholder="例：高清水、雪の茅舎">
@@ -387,6 +410,6 @@
       </div>
     </div>
   </dialog>
-  <footer class="app-footer">さけいちず v1.1 / ローカル保存版</footer>
+  <footer class="app-footer">さけいちず v1.2 / ローカル保存版</footer>
 </body>
 </html>

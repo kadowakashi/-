@@ -1,12 +1,14 @@
 (function () {
   const STORAGE_KEY = "nomichizu.records.v0.1";
   const SETTINGS_KEY = "sakeichizu.displaySettings.v0.4";
-  const EXPORT_VERSION = "1.1";
+  const EXPORT_VERSION = "1.2";
   const AKITA_CITY = [39.7186, 140.1024];
   const MAX_PHOTOS_PER_SPOT = 3;
   const MAX_PHOTO_EDGE = 1280;
   const JPEG_QUALITY = 0.72;
   const SAKE_TYPES = ["日本酒", "ビール", "焼酎", "ワイン", "ウイスキー", "カクテル", "その他"];
+  const DRINK_COUNT_TYPES = ["ビール", "日本酒", "焼酎", "ワイン", "ウイスキー", "ハイボール", "カクテル", "サワー", "ソフトドリンク", "その他"];
+  const NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse";
   const DEFAULT_AREAS = ["秋田駅前", "川反", "大町", "山王", "土崎", "能代", "仙台", "東京", "旅行先", "その他"];
   const CATEGORY_STYLES = {
     "居酒屋": { color: "#a9442a", short: "居" },
@@ -27,12 +29,17 @@
     pendingLatLng: null,
     editingSpotId: null,
     editingPhotos: [],
+    editingDrinkCounts: [],
     viewerPhotos: [],
     viewerIndex: 0,
     pinDisplayMode: "active",
     routeVisible: true,
     searchQuery: "",
-    spotInputMode: "detail"
+    spotInputMode: "detail",
+    mapCandidate: null,
+    geocodeRequestId: 0,
+    geocodeAbortController: null,
+    geocodeCache: new Map()
   };
 
   const elements = {
@@ -53,6 +60,7 @@
     summaryStats: document.querySelector("#summaryStats"),
     sakeTypeStats: document.querySelector("#sakeTypeStats"),
     sakeRatingStats: document.querySelector("#sakeRatingStats"),
+    drinkCountStats: document.querySelector("#drinkCountStats"),
     storageStats: document.querySelector("#storageStats"),
     dataCheckResults: document.querySelector("#dataCheckResults"),
     monthlyStatsList: document.querySelector("#monthlyStatsList"),
@@ -97,6 +105,14 @@
     spotCategory: document.querySelector("#spotCategory"),
     spotArea: document.querySelector("#spotArea"),
     spotName: document.querySelector("#spotName"),
+    mapCandidatePanel: document.querySelector("#mapCandidatePanel"),
+    mapCandidateStatus: document.querySelector("#mapCandidateStatus"),
+    mapCandidateName: document.querySelector("#mapCandidateName"),
+    mapCandidateAddress: document.querySelector("#mapCandidateAddress"),
+    applyCandidateNameButton: document.querySelector("#applyCandidateNameButton"),
+    googleMapsLink: document.querySelector("#googleMapsLink"),
+    spotAddress: document.querySelector("#spotAddress"),
+    drinkCountControls: document.querySelector("#drinkCountControls"),
     drinks: document.querySelector("#drinks"),
     sakeType: document.querySelector("#sakeType"),
     sakeBrand: document.querySelector("#sakeBrand"),
@@ -191,6 +207,60 @@
     return captions.length ? captions.join("、") : "";
   }
 
+  function normalizeDrinkCounts(drinkCounts) {
+    if (!Array.isArray(drinkCounts)) {
+      return [];
+    }
+    const totals = new Map();
+    drinkCounts.forEach((item) => {
+      const type = String(item?.type || "").trim();
+      const count = Math.max(0, Math.floor(Number(item?.count) || 0));
+      if (!type || count <= 0) {
+        return;
+      }
+      totals.set(type, (totals.get(type) || 0) + count);
+    });
+    return [...totals.entries()].map(([type, count]) => ({ type, count }));
+  }
+
+  function parseDrinkCountsText(value) {
+    return normalizeDrinkCounts(
+      String(value || "")
+        .split(/\s*[/／、,]\s*/)
+        .map((part) => {
+          const match = part.match(/^(.+?)\s*[:：]\s*(\d+)/);
+          return match ? { type: match[1].trim(), count: Number(match[2]) } : null;
+        })
+        .filter(Boolean)
+    );
+  }
+
+  function formatDrinkCounts(drinkCounts, fallback = "未記入") {
+    const counts = normalizeDrinkCounts(drinkCounts);
+    return counts.length
+      ? counts.map((item) => `${item.type}${item.count}杯`).join("、")
+      : fallback;
+  }
+
+  function csvDrinkCounts(drinkCounts) {
+    return normalizeDrinkCounts(drinkCounts)
+      .map((item) => `${item.type}:${item.count}`)
+      .join(" / ");
+  }
+
+  function totalDrinkCups(drinkCounts) {
+    return normalizeDrinkCounts(drinkCounts).reduce((sum, item) => sum + item.count, 0);
+  }
+
+  function spotDrinkText(spot, fallback = "未記入") {
+    const structured = formatDrinkCounts(spot.drinkCounts, "");
+    const freeText = String(spot.drinks || "").trim();
+    if (structured && freeText) {
+      return `${structured} / ${freeText}`;
+    }
+    return structured || freeText || fallback;
+  }
+
   function normalizeSpot(spot) {
     return {
       id: typeof spot.id === "string" && spot.id ? spot.id : makeId("spot"),
@@ -198,9 +268,13 @@
       name: String(spot.name || ""),
       category: String(spot.category || "その他"),
       area: String(spot.area || ""),
+      address: String(spot.address || ""),
+      mapCandidateName: String(spot.mapCandidateName || ""),
+      googleMapsUrl: String(spot.googleMapsUrl || ""),
       lat: Number(spot.lat),
       lng: Number(spot.lng),
       drinks: String(spot.drinks || ""),
+      drinkCounts: normalizeDrinkCounts(spot.drinkCounts),
       sakeType: String(spot.sakeType || ""),
       sakeBrand: String(spot.sakeBrand || ""),
       sakeMaker: String(spot.sakeMaker || ""),
@@ -373,12 +447,20 @@
     return Math.round(total);
   }
 
+  function hasAmountText(value) {
+    return String(value || "").trim().length > 0;
+  }
+
+  function isUnreadableAmount(value) {
+    return hasAmountText(value) && extractAmount(value) <= 0;
+  }
+
   function sessionAmount(session) {
-    const totalMemoAmount = extractAmount(session.totalCostMemo);
-    if (totalMemoAmount > 0) {
-      return totalMemoAmount;
-    }
     return (session.spots || []).reduce((sum, spot) => sum + extractAmount(spot.cost), 0);
+  }
+
+  function googleMapsUrl(lat, lng) {
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${lat},${lng}`)}`;
   }
 
   function monthKey(dateText) {
@@ -567,6 +649,192 @@
       .join("");
   }
 
+  function drinkCountValue(type) {
+    return normalizeDrinkCounts(state.editingDrinkCounts).find((item) => item.type === type)?.count || 0;
+  }
+
+  function setDrinkCountValue(type, count) {
+    const safeCount = Math.max(0, Math.floor(Number(count) || 0));
+    const current = new Map(normalizeDrinkCounts(state.editingDrinkCounts).map((item) => [item.type, item.count]));
+    if (safeCount > 0) {
+      current.set(type, safeCount);
+    } else {
+      current.delete(type);
+    }
+    state.editingDrinkCounts = [...current.entries()].map(([itemType, itemCount]) => ({ type: itemType, count: itemCount }));
+  }
+
+  function renderDrinkCountControls() {
+    elements.drinkCountControls.innerHTML = DRINK_COUNT_TYPES.map((type) => {
+      const count = drinkCountValue(type);
+      return `
+        <div class="drink-count-row ${count > 0 ? "is-active" : ""}">
+          <label class="drink-count-check">
+            <input type="checkbox" data-action="toggle-drink-count" data-drink-type="${escapeHtml(type)}" ${count > 0 ? "checked" : ""}>
+            <span>${escapeHtml(type)}</span>
+          </label>
+          <div class="drink-stepper">
+            <button class="count-button" type="button" data-action="decrement-drink-count" data-drink-type="${escapeHtml(type)}" ${count <= 0 ? "disabled" : ""}>−</button>
+            <strong>${count}</strong>
+            <button class="count-button" type="button" data-action="increment-drink-count" data-drink-type="${escapeHtml(type)}">＋</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  function geocodeCacheKey(latlng) {
+    return `${Number(latlng.lat).toFixed(5)},${Number(latlng.lng).toFixed(5)}`;
+  }
+
+  function addressText(address) {
+    if (!address || typeof address !== "object") {
+      return "";
+    }
+    return [
+      address.province || address.state,
+      address.city || address.town || address.village || address.county,
+      address.suburb || address.neighbourhood || address.quarter,
+      address.road || address.pedestrian,
+      address.house_number
+    ].filter(Boolean).join("");
+  }
+
+  function candidateNameFromNominatim(data) {
+    const address = data?.address || {};
+    return String(
+      data?.name ||
+      data?.namedetails?.name ||
+      address.amenity ||
+      address.restaurant ||
+      address.pub ||
+      address.bar ||
+      address.cafe ||
+      address.shop ||
+      address.tourism ||
+      address.building ||
+      address.road ||
+      ""
+    ).trim();
+  }
+
+  function candidateFromNominatim(data, latlng) {
+    const address = addressText(data?.address) || String(data?.display_name || "").trim();
+    const displayName = String(data?.display_name || "").trim();
+    const name = candidateNameFromNominatim(data) || displayName.split(",")[0]?.trim() || "";
+    return {
+      name,
+      address,
+      googleMapsUrl: googleMapsUrl(latlng.lat, latlng.lng)
+    };
+  }
+
+  function renderMapCandidate(statusText = "") {
+    if (!elements.mapCandidatePanel) {
+      return;
+    }
+    const candidate = state.mapCandidate || {};
+    elements.mapCandidatePanel.hidden = false;
+    elements.mapCandidateStatus.textContent = statusText || (candidate.name || candidate.address ? "候補を取得しました。必要に応じて修正してください。" : "候補は未取得です。手入力できます。");
+    elements.mapCandidateName.textContent = candidate.name || "未取得";
+    elements.mapCandidateAddress.textContent = candidate.address || "未取得";
+    elements.applyCandidateNameButton.disabled = !candidate.name;
+    const url = candidate.googleMapsUrl || googleMapsUrl(elements.spotLat.value || 0, elements.spotLng.value || 0);
+    elements.googleMapsLink.href = url;
+  }
+
+  function clearMapCandidate() {
+    state.mapCandidate = null;
+    if (state.geocodeAbortController) {
+      state.geocodeAbortController.abort();
+      state.geocodeAbortController = null;
+    }
+    if (elements.mapCandidatePanel) {
+      elements.mapCandidatePanel.hidden = true;
+      elements.mapCandidateStatus.textContent = "";
+      elements.mapCandidateName.textContent = "未取得";
+      elements.mapCandidateAddress.textContent = "未取得";
+      elements.applyCandidateNameButton.disabled = true;
+      elements.googleMapsLink.href = "#";
+    }
+  }
+
+  async function fetchMapCandidate(latlng) {
+    const key = geocodeCacheKey(latlng);
+    state.mapCandidate = {
+      name: "",
+      address: "",
+      googleMapsUrl: googleMapsUrl(latlng.lat, latlng.lng)
+    };
+    renderMapCandidate("地図クリック地点の候補を取得しています。");
+
+    if (state.geocodeCache.has(key)) {
+      state.mapCandidate = state.geocodeCache.get(key);
+      if (!elements.spotName.value.trim() && state.mapCandidate.name) {
+        elements.spotName.value = state.mapCandidate.name;
+      }
+      if (!elements.spotAddress.value.trim() && state.mapCandidate.address) {
+        elements.spotAddress.value = state.mapCandidate.address;
+      }
+      renderMapCandidate("近い地点の候補を表示しています。");
+      return;
+    }
+
+    if (state.geocodeAbortController) {
+      state.geocodeAbortController.abort();
+    }
+    const requestId = state.geocodeRequestId + 1;
+    state.geocodeRequestId = requestId;
+    state.geocodeAbortController = new AbortController();
+
+    try {
+      const url = new URL(NOMINATIM_REVERSE_URL);
+      url.searchParams.set("format", "jsonv2");
+      url.searchParams.set("lat", latlng.lat);
+      url.searchParams.set("lon", latlng.lng);
+      url.searchParams.set("zoom", "18");
+      url.searchParams.set("addressdetails", "1");
+      url.searchParams.set("namedetails", "1");
+      url.searchParams.set("accept-language", "ja");
+      const response = await fetch(url.toString(), {
+        signal: state.geocodeAbortController.signal,
+        headers: { Accept: "application/json" }
+      });
+      if (!response.ok) {
+        throw new Error("候補取得に失敗しました。手入力で登録できます。");
+      }
+      const data = await response.json();
+      if (requestId !== state.geocodeRequestId) {
+        return;
+      }
+      const candidate = candidateFromNominatim(data, latlng);
+      state.geocodeCache.set(key, candidate);
+      state.mapCandidate = candidate;
+      if (!elements.spotName.value.trim() && candidate.name) {
+        elements.spotName.value = candidate.name;
+      }
+      if (!elements.spotAddress.value.trim() && candidate.address) {
+        elements.spotAddress.value = candidate.address;
+      }
+      renderMapCandidate(candidate.name || candidate.address ? "候補を取得しました。候補は不正確な場合があります。" : "候補を取得できませんでした。手入力で登録できます。");
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        return;
+      }
+      state.mapCandidate = {
+        name: "",
+        address: "",
+        googleMapsUrl: googleMapsUrl(latlng.lat, latlng.lng)
+      };
+      renderMapCandidate("通信に失敗しました。手入力で登録できます。");
+      showStatus("場所候補を取得できませんでした。通信状況を確認し、必要なら手入力してください。", "warning");
+    } finally {
+      if (requestId === state.geocodeRequestId) {
+        state.geocodeAbortController = null;
+      }
+    }
+  }
+
   function setSearchTerm(term) {
     state.searchQuery = term;
     elements.recordSearch.value = term;
@@ -622,7 +890,10 @@
         spot.name,
         spot.category,
         spot.area,
+        spot.address,
+        spot.mapCandidateName,
         spot.drinks,
+        formatDrinkCounts(spot.drinkCounts, ""),
         spot.sakeType,
         spot.sakeBrand,
         spot.sakeMaker,
@@ -751,6 +1022,8 @@
     state.pendingLatLng = latlng;
     state.editingSpotId = null;
     state.editingPhotos = [];
+    state.editingDrinkCounts = [];
+    clearMapCandidate();
     elements.spotDialogTitle.textContent = "スポット追加";
     elements.spotForm.reset();
     elements.spotLat.value = latlng.lat.toFixed(6);
@@ -759,6 +1032,8 @@
     elements.rating.value = "5";
     elements.revisit.value = "はい";
     renderPhotoPreview();
+    renderDrinkCountControls();
+    fetchMapCandidate(latlng);
     setResponsiveSpotInputMode();
     elements.spotDialog.showModal();
     elements.spotName.focus();
@@ -775,6 +1050,12 @@
     state.activeSessionId = sessionId;
     state.editingSpotId = spotId;
     state.editingPhotos = normalizePhotos(spot.photos);
+    state.editingDrinkCounts = normalizeDrinkCounts(spot.drinkCounts);
+    state.mapCandidate = {
+      name: spot.mapCandidateName || "",
+      address: spot.address || "",
+      googleMapsUrl: spot.googleMapsUrl || googleMapsUrl(spot.lat, spot.lng)
+    };
     fillSessionForm(session);
     elements.spotDialogTitle.textContent = "スポット編集";
     elements.spotForm.reset();
@@ -784,6 +1065,7 @@
     elements.spotCategory.value = spot.category;
     elements.spotArea.value = spot.area;
     elements.spotName.value = spot.name;
+    elements.spotAddress.value = spot.address;
     elements.drinks.value = spot.drinks;
     elements.sakeType.value = spot.sakeType;
     elements.sakeBrand.value = spot.sakeBrand;
@@ -798,6 +1080,8 @@
     elements.revisit.value = spot.revisit;
     elements.spotMemo.value = spot.memo;
     renderPhotoPreview();
+    renderDrinkCountControls();
+    renderMapCandidate(spot.mapCandidateName || spot.address ? "保存済みの候補情報を表示しています。" : "Googleマップで場所を確認できます。");
     render();
     setResponsiveSpotInputMode();
     elements.spotDialog.showModal();
@@ -817,9 +1101,13 @@
       name: elements.spotName.value.trim(),
       category: elements.spotCategory.value,
       area: elements.spotArea.value.trim(),
+      address: elements.spotAddress.value.trim(),
+      mapCandidateName: String(state.mapCandidate?.name || "").trim(),
+      googleMapsUrl: String(state.mapCandidate?.googleMapsUrl || googleMapsUrl(lat, lng)),
       lat,
       lng,
       drinks: elements.drinks.value.trim(),
+      drinkCounts: normalizeDrinkCounts(state.editingDrinkCounts),
       sakeType: elements.sakeType.value,
       sakeBrand: elements.sakeBrand.value.trim(),
       sakeMaker: elements.sakeMaker.value.trim(),
@@ -1093,9 +1381,13 @@
           ${firstPhoto ? `<button class="photo-open-button" type="button" data-action="view-photos" data-session-id="${session.id}" data-spot-id="${spot.id}" data-photo-index="0"><img class="popup-thumb" src="${photoDataUrl(firstPhoto)}" alt="${escapeHtml(spot.name)}の写真"></button>` : ""}
           ${escapeHtml(spot.order)} / ${escapeHtml(session.title)}<br>
           エリア: ${escapeHtml(spot.area || "未記入")}<br>
+          住所: ${escapeHtml(spot.address || "未記入")}<br>
+          飲んだもの: ${escapeHtml(spotDrinkText(spot))}<br>
           銘柄: ${escapeHtml(spot.sakeBrand || "未記入")}<br>
           おすすめ度: ${escapeHtml(spot.sakeRating || "未記入")}<br>
+          支払額: ${escapeHtml(spot.cost || "未記入")}<br>
           ${escapeHtml(spot.memo || "メモなし")}
+          ${spot.googleMapsUrl ? `<br><a href="${escapeHtml(spot.googleMapsUrl)}" target="_blank" rel="noopener">Googleマップで確認</a>` : ""}
         `);
         state.markers.set(spot.id, marker);
       });
@@ -1132,6 +1424,7 @@
       elements.summaryStats.innerHTML = '<p class="empty">まだ記録がありません。</p>';
       elements.sakeTypeStats.innerHTML = "";
       elements.sakeRatingStats.innerHTML = "";
+      elements.drinkCountStats.innerHTML = "";
       return;
     }
 
@@ -1145,6 +1438,10 @@
     const ratingCounts = [1, 2, 3, 4, 5].map((rating) => ({
       label: `${rating}`,
       count: records.filter(({ spot }) => ratingNumber(spot.sakeRating) === rating).length
+    }));
+    const drinkCupCounts = DRINK_COUNT_TYPES.map((type) => ({
+      label: type,
+      count: records.reduce((sum, { spot }) => sum + (normalizeDrinkCounts(spot.drinkCounts).find((item) => item.type === type)?.count || 0), 0)
     }));
 
     elements.summaryStats.innerHTML = [
@@ -1166,6 +1463,11 @@
     elements.sakeRatingStats.innerHTML = ratingCounts.map((item) => `
       <div class="mini-row"><span>${escapeHtml(item.label)}</span><strong>${item.count}</strong></div>
     `).join("");
+    elements.drinkCountStats.innerHTML = drinkCupCounts.some((item) => item.count > 0)
+      ? drinkCupCounts.map((item) => `
+        <div class="mini-row"><span>${escapeHtml(item.label)}</span><strong>${item.count}杯</strong></div>
+      `).join("")
+      : '<p class="empty">杯数カウントはまだありません。</p>';
   }
 
   function renderBrandStats(records) {
@@ -1277,6 +1579,7 @@
           sakeLogs: 0,
           photos: 0,
           amount: 0,
+          drinkCups: 0,
           ratings: [],
           sakeRatings: [],
           drinkAgain: 0,
@@ -1290,6 +1593,7 @@
       session.spots.forEach((spot) => {
         if (hasSakeLog(spot)) group.sakeLogs += 1;
         group.photos += normalizePhotos(spot.photos).length;
+        group.drinkCups += totalDrinkCups(spot.drinkCounts);
         const rating = ratingNumber(spot.rating);
         const sakeRating = ratingNumber(spot.sakeRating);
         if (rating !== null) group.ratings.push(rating);
@@ -1318,7 +1622,7 @@
       <article class="insight-item">
         <h3>${escapeHtml(row.month)}</h3>
         <p class="meta">飲み会数: ${row.sessions} / スポット数: ${row.spots} / 酒ログ: ${row.sakeLogs} / 写真: ${row.photos}枚</p>
-        <p class="meta">金額概算: ${escapeHtml(formatYen(row.amount))}</p>
+        <p class="meta">支払額合計: ${escapeHtml(formatYen(row.amount))} / 合計杯数: ${row.drinkCups}杯</p>
         <p class="meta">平均評価: ${escapeHtml(averageText(row.ratings))} / 平均おすすめ度: ${escapeHtml(averageText(row.sakeRatings))}</p>
         <p class="meta">もう一度飲みたい: ${row.drinkAgain} / 再訪したい: ${row.revisit}</p>
       </article>
@@ -1488,6 +1792,10 @@
 
     let missingSakeFields = 0;
     let missingAreaFields = 0;
+    let missingMapFields = 0;
+    let missingDrinkCountFields = 0;
+    let invalidDrinkCountValues = 0;
+    const unreadableCosts = [];
     let missingPhotosFields = 0;
     let oldPhotoStrings = 0;
     let invalidPhotoValues = 0;
@@ -1555,6 +1863,25 @@
         if (!Object.prototype.hasOwnProperty.call(spot, "area")) {
           missingAreaFields += 1;
         }
+        ["address", "mapCandidateName", "googleMapsUrl"].forEach((field) => {
+          if (!Object.prototype.hasOwnProperty.call(spot, field)) {
+            missingMapFields += 1;
+          }
+        });
+        if (!Object.prototype.hasOwnProperty.call(spot, "drinkCounts")) {
+          missingDrinkCountFields += 1;
+        } else if (!Array.isArray(spot.drinkCounts)) {
+          invalidDrinkCountValues += 1;
+        } else {
+          spot.drinkCounts.forEach((item) => {
+            if (!item || typeof item !== "object" || !String(item.type || "").trim() || Math.floor(Number(item.count) || 0) <= 0) {
+              invalidDrinkCountValues += 1;
+            }
+          });
+        }
+        if (isUnreadableAmount(spot.cost)) {
+          unreadableCosts.push(spotLabel);
+        }
         ["sakeType", "sakeBrand", "sakeMaker", "sakeTaste", "sakeRating", "drinkAgain", "sakeMemo"].forEach((field) => {
           if (!Object.prototype.hasOwnProperty.call(spot, field)) {
             missingSakeFields += 1;
@@ -1589,6 +1916,34 @@
         level: "warning",
         text: `${missingAreaFields}件のスポットでエリア項目がありません。空欄で補完できます。`,
         autofixable: true
+      });
+    }
+    if (missingMapFields) {
+      issues.push({
+        level: "warning",
+        text: `住所・地図候補項目の不足が${missingMapFields}項目あります。空欄で補完できます。`,
+        autofixable: true
+      });
+    }
+    if (missingDrinkCountFields) {
+      issues.push({
+        level: "warning",
+        text: `${missingDrinkCountFields}件のスポットで飲み物カウントがありません。空配列で補完できます。`,
+        autofixable: true
+      });
+    }
+    if (invalidDrinkCountValues) {
+      issues.push({
+        level: "warning",
+        text: `${invalidDrinkCountValues}件の飲み物カウントが不正です。自動補正では有効な杯数だけ残します。`,
+        autofixable: true
+      });
+    }
+    if (unreadableCosts.length) {
+      issues.push({
+        level: "warning",
+        text: `支払額を読み取れないスポットがあります: ${unreadableCosts.slice(0, 5).join("、")}${unreadableCosts.length > 5 ? ` ほか${unreadableCosts.length - 5}件` : ""}`,
+        autofixable: false
       });
     }
     if (missingSakeFields) {
@@ -1633,9 +1988,13 @@
       name: String(spot.name || "名称未設定"),
       category: String(spot.category || "その他"),
       area: String(spot.area || ""),
+      address: String(spot.address || ""),
+      mapCandidateName: String(spot.mapCandidateName || ""),
+      googleMapsUrl: String(spot.googleMapsUrl || ""),
       lat: Number(spot.lat),
       lng: Number(spot.lng),
       drinks: String(spot.drinks || ""),
+      drinkCounts: normalizeDrinkCounts(spot.drinkCounts),
       sakeType: String(spot.sakeType || ""),
       sakeBrand: String(spot.sakeBrand || ""),
       sakeMaker: String(spot.sakeMaker || ""),
@@ -1823,6 +2182,7 @@
 
     elements.sessionList.innerHTML = visibleSessions.map((session) => {
       const tags = (session.tags || []).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("");
+      const paymentTotal = sessionAmount(session);
       const spots = session.spots.length
         ? getSortedSpots(session).map((spot) => {
           const photos = normalizePhotos(spot.photos);
@@ -1841,6 +2201,8 @@
               <div>
                 <strong>${escapeHtml(spot.order)} ${escapeHtml(spot.name)}</strong>
                 <div class="meta">${escapeHtml(spot.category)} / エリア ${escapeHtml(spot.area || "未記入")} / 評価 ${escapeHtml(spot.rating)} / 再訪 ${escapeHtml(spot.revisit)}</div>
+                <div class="meta">住所: ${escapeHtml(spot.address || "未記入")}</div>
+                <div class="meta">飲んだもの: ${escapeHtml(spotDrinkText(spot))} / 支払額 ${escapeHtml(spot.cost || "未記入")}</div>
                 <div class="meta">酒ログ: ${escapeHtml(spot.sakeType || "種類未記入")} / ${escapeHtml(spot.sakeBrand || "銘柄未記入")} / おすすめ度 ${escapeHtml(spot.sakeRating || "未記入")} / もう一度 ${escapeHtml(spot.drinkAgain || "未記入")}</div>
               </div>
               <div class="spot-actions">
@@ -1865,7 +2227,7 @@
             <button class="small-button danger" type="button" data-action="delete-session" data-session-id="${session.id}">削除</button>
           </div>
           <p class="meta">${escapeHtml(session.overallMemo || "全体メモなし")}</p>
-          <p class="meta">総額: ${escapeHtml(session.totalCostMemo || "未記入")}</p>
+          <p class="meta">支払額合計: ${escapeHtml(formatYen(paymentTotal))} / 総額メモ: ${escapeHtml(session.totalCostMemo || "未記入")}</p>
           <div class="tag-row">${tags || '<span class="tag">タグなし</span>'}</div>
           <button class="small-button" type="button" data-action="select-session" data-session-id="${session.id}">この記録を編集</button>
           <div class="spot-list">${spots}</div>
@@ -1897,7 +2259,9 @@
         return [
           `## ${index + 1}. ${plain(spot.order, `${index + 1}軒目`)}：${spot.name}`,
           `カテゴリ：${plain(spot.category)}`,
-          `飲んだもの：${plain(spot.drinks)}`,
+          `住所：${plain(spot.address)}`,
+          `地図候補名：${plain(spot.mapCandidateName)}`,
+          `飲んだもの：${plain(spotDrinkText(spot, ""))}`,
           `写真：${photos.length ? `${photos.length}枚` : "なし"}`,
           captions ? `写真キャプション：${captions}` : "",
           "### 酒ログ",
@@ -1927,7 +2291,8 @@
       "## 基本情報",
       `日付：${plain(session.date)}`,
       `同行者：${plain(session.companions, "同行者なし")}`,
-      `総額メモ：${plain(session.totalCostMemo)}`,
+      `支払額合計：${formatYen(sessionAmount(session))}`,
+      `総額メモ：${plain(session.totalCostMemo)}（割り勘や端数などの補足）`,
       `タグ：${session.tags.length ? session.tags.join("、") : "タグなし"}`,
       "",
       "## 全体メモ",
@@ -2022,14 +2387,20 @@
       "同行者",
       "全体メモ",
       "総額メモ",
+      "支払額合計",
       "タグ",
       "スポット順番",
       "店名",
       "カテゴリ",
       "エリア",
+      "住所",
+      "地図候補名",
+      "Googleマップ確認URL",
       "緯度",
       "経度",
       "飲んだもの",
+      "飲み物カウント",
+      "合計杯数",
       "酒の種類",
       "銘柄",
       "酒蔵・メーカー",
@@ -2059,14 +2430,20 @@
         session.companions,
         session.overallMemo,
         session.totalCostMemo,
+        sessionAmount(session),
         (session.tags || []).join("、"),
         spot?.order || "",
         spot?.name || "",
         spot?.category || "",
         spot?.area || "",
+        spot?.address || "",
+        spot?.mapCandidateName || "",
+        spot?.googleMapsUrl || "",
         spot ? spot.lat : "",
         spot ? spot.lng : "",
         spot?.drinks || "",
+        spot ? csvDrinkCounts(spot.drinkCounts) : "",
+        spot ? totalDrinkCups(spot.drinkCounts) : "",
         spot?.sakeType || "",
         spot?.sakeBrand || "",
         spot?.sakeMaker || "",
@@ -2098,6 +2475,7 @@
         "酒ログ登録数",
         "写真枚数",
         "金額概算",
+        "合計杯数",
         "平均評価",
         "平均おすすめ度",
         "もう一度飲みたい件数",
@@ -2110,6 +2488,7 @@
         row.sakeLogs,
         row.photos,
         row.amount,
+        row.drinkCups,
         averageText(row.ratings),
         averageText(row.sakeRatings),
         row.drinkAgain,
@@ -2279,9 +2658,13 @@
         name: spotName,
         category: readCsvValue(record, "カテゴリ") || "その他",
         area: readCsvValue(record, "エリア"),
+        address: readCsvValue(record, "住所"),
+        mapCandidateName: readCsvValue(record, "地図候補名"),
+        googleMapsUrl: readCsvValue(record, "Googleマップ確認URL") || googleMapsUrl(lat, lng),
         lat,
         lng,
         drinks: readCsvValue(record, "飲んだもの"),
+        drinkCounts: parseDrinkCountsText(readCsvValue(record, "飲み物カウント")),
         sakeType: readCsvValue(record, "酒の種類"),
         sakeBrand: readCsvValue(record, "銘柄"),
         sakeMaker: readCsvValue(record, "酒蔵・メーカー"),
@@ -2449,6 +2832,38 @@
     state.searchQuery = elements.recordSearch.value;
     renderSessions();
   });
+  elements.applyCandidateNameButton.addEventListener("click", () => {
+    if (state.mapCandidate?.name) {
+      elements.spotName.value = state.mapCandidate.name;
+      if (!elements.spotAddress.value.trim() && state.mapCandidate.address) {
+        elements.spotAddress.value = state.mapCandidate.address;
+      }
+      showStatus("候補名を店名欄に反映しました。", "success");
+    }
+  });
+  elements.drinkCountControls.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button) {
+      return;
+    }
+    const type = button.dataset.drinkType;
+    const current = drinkCountValue(type);
+    if (button.dataset.action === "increment-drink-count") {
+      setDrinkCountValue(type, current + 1);
+    }
+    if (button.dataset.action === "decrement-drink-count") {
+      setDrinkCountValue(type, current - 1);
+    }
+    renderDrinkCountControls();
+  });
+  elements.drinkCountControls.addEventListener("change", (event) => {
+    const checkbox = event.target.closest("input[data-action='toggle-drink-count']");
+    if (!checkbox) {
+      return;
+    }
+    setDrinkCountValue(checkbox.dataset.drinkType, checkbox.checked ? Math.max(1, drinkCountValue(checkbox.dataset.drinkType)) : 0);
+    renderDrinkCountControls();
+  });
   elements.photoInput.addEventListener("change", () => handlePhotoFiles(elements.photoInput.files));
   elements.photoPreviewList.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action]");
@@ -2492,6 +2907,7 @@
   elements.closeSpotDialog.addEventListener("click", () => {
     elements.spotDialog.close();
     state.editingSpotId = null;
+    clearMapCandidate();
   });
   elements.listPanel.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action]");
