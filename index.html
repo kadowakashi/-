@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>さけいちず v1.3</title>
+  <title>さけいちず v1.4.1</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="style.css">
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -14,7 +14,7 @@
     <div>
       <p class="eyebrow">地図と日記で残す飲み歩き記録</p>
       <h1>さけいちず</h1>
-      <p class="app-version">さけいちず v1.3</p>
+      <p class="app-version">さけいちず v1.4.1</p>
     </div>
     <button id="locateButton" class="button secondary locate-button" type="button">現在地を取得</button>
   </header>
@@ -56,7 +56,10 @@
         </label>
         <input id="totalCostMemo" type="hidden">
         <div class="field-group">
-          <span class="field-label">タグ候補</span>
+          <div class="inline-field-title">
+            <span class="field-label">タグ候補</span>
+            <button id="tagSettingsButton" class="small-button" type="button">タグ設定</button>
+          </div>
           <div id="tagCheckboxList" class="tag-checkbox-list" aria-label="タグ候補"></div>
         </div>
         <label>
@@ -234,16 +237,8 @@
       </div>
       <p class="simple-mode-note">簡易入力は、店名・飲み物カウント・銘柄・写真・一言メモ・評価だけで素早く保存できます。</p>
 
-      <div class="coord-grid detail-field">
-        <label>
-          緯度
-          <input id="spotLat" type="number" step="0.000001" required>
-        </label>
-        <label>
-          経度
-          <input id="spotLng" type="number" step="0.000001" required>
-        </label>
-      </div>
+      <input id="spotLat" type="hidden">
+      <input id="spotLng" type="hidden">
 
       <div class="coord-grid detail-field">
         <label>
@@ -361,8 +356,9 @@
         </label>
       </div>
       <label class="detail-field">
-        食べたもの
+        この店の一品！
         <input id="foods" type="text" placeholder="例：いぶりがっこ、比内地鶏">
+        <span class="input-help">この店で一番おいしかった料理を1つだけメモ</span>
       </label>
       <div class="coord-grid cost-rating-grid">
         <label class="detail-field">
@@ -372,12 +368,14 @@
         <label class="quick-field">
           評価
           <select id="rating">
-            <option value="1">1</option>
-            <option value="2">2</option>
-            <option value="3">3</option>
-            <option value="4">4</option>
-            <option value="5" selected>5</option>
+            <option value="">未選択</option>
+            <option value="S">S：最高。必ずまた行きたい</option>
+            <option value="A">A：かなり良い。また行きたい</option>
+            <option value="B" selected>B：普通に良い</option>
+            <option value="C">C：やや物足りない</option>
+            <option value="D">D：再訪はしなくてよい</option>
           </select>
+          <span class="input-help">S：最高 / A：かなり良い / B：普通 / C：やや物足りない / D：再訪なし</span>
         </label>
       </div>
       <label class="detail-field">
@@ -404,6 +402,28 @@
     </form>
   </dialog>
 
+  <dialog id="tagSettingsDialog" class="tag-settings-dialog">
+    <form method="dialog" class="form-stack">
+      <div class="section-title">
+        <h2>タグ設定</h2>
+        <button id="closeTagSettingsDialog" class="icon-button" type="button" aria-label="閉じる">×</button>
+      </div>
+      <p class="hint">チェックボックスに表示するタグ候補を編集します。候補から削除しても、過去の飲み会記録についているタグは削除されません。</p>
+      <div class="tag-add-row">
+        <label>
+          追加するタグ
+          <input id="newTagCandidate" type="text" placeholder="例：角打ち">
+        </label>
+        <button id="addTagCandidateButton" class="small-button" type="button">追加</button>
+      </div>
+      <div class="button-row">
+        <button id="syncRecordTagsButton" class="small-button" type="button">記録中のタグを候補に追加</button>
+        <button id="resetTagCandidatesButton" class="small-button danger" type="button">初期候補に戻す</button>
+      </div>
+      <div id="tagSettingsList" class="tag-settings-list"></div>
+    </form>
+  </dialog>
+
   <dialog id="photoViewer" class="photo-viewer" aria-label="写真ビューア">
     <div class="photo-viewer-inner">
       <button id="closePhotoViewer" class="icon-button viewer-close" type="button" aria-label="閉じる">×</button>
@@ -416,6 +436,6 @@
       </div>
     </div>
   </dialog>
-  <footer class="app-footer">さけいちず v1.3 / ローカル保存版</footer>
+  <footer class="app-footer">さけいちず v1.4.1 / ローカル保存版</footer>
 </body>
 </html>

@@ -2,7 +2,7 @@
   const STORAGE_KEY = "nomichizu.records.v0.1";
   const SETTINGS_KEY = "sakeichizu.displaySettings.v0.4";
   const TAG_SETTINGS_KEY = "sakeichizu.tagSettings.v1.4";
-  const EXPORT_VERSION = "1.4";
+  const EXPORT_VERSION = "1.4.1";
   const AKITA_CITY = [39.7186, 140.1024];
   const MAX_PHOTOS_PER_SPOT = 3;
   const MAX_PHOTO_EDGE = 1280;
@@ -48,6 +48,7 @@
     searchQuery: "",
     spotInputMode: "detail",
     tagCandidates: [],
+    recordsLoadFailed: false,
     mapCandidate: null,
     geocodeRequestId: 0,
     geocodeAbortController: null,
@@ -195,6 +196,15 @@
       .replaceAll("'", "&#039;");
   }
 
+  function safeStorageId(value, prefix) {
+    const text = String(value || "").trim();
+    return /^[A-Za-z0-9_-]{1,80}$/.test(text) ? text : makeId(prefix);
+  }
+
+  function idAttr(value) {
+    return escapeHtml(String(value || ""));
+  }
+
   function isValidPhotoDataUrl(value) {
     return /^data:image\/(jpeg|jpg|png|webp);base64,[a-z0-9+/=]+$/i.test(String(value || ""));
   }
@@ -293,51 +303,56 @@
   }
 
   function normalizeSpot(spot) {
+    const source = spot && typeof spot === "object" ? spot : {};
+    const lat = Number(source.lat);
+    const lng = Number(source.lng);
+    const bestDish = spotBestDish(source);
     return {
-      id: typeof spot.id === "string" && spot.id ? spot.id : makeId("spot"),
-      order: String(spot.order || ""),
-      name: String(spot.name || ""),
-      category: String(spot.category || "その他"),
-      area: String(spot.area || ""),
-      address: String(spot.address || ""),
-      mapCandidateName: String(spot.mapCandidateName || ""),
-      googleMapsUrl: String(spot.googleMapsUrl || ""),
-      lat: Number(spot.lat),
-      lng: Number(spot.lng),
-      drinks: String(spot.drinks || ""),
-      drinkCounts: normalizeDrinkCounts(spot.drinkCounts),
-      sakeType: String(spot.sakeType || ""),
-      sakeBrand: String(spot.sakeBrand || ""),
-      sakeMaker: String(spot.sakeMaker || ""),
-      sakeTaste: String(spot.sakeTaste || ""),
-      sakeRating: String(spot.sakeRating || ""),
-      drinkAgain: spot.drinkAgain === "いいえ" ? "いいえ" : spot.drinkAgain === "はい" ? "はい" : "",
-      sakeMemo: String(spot.sakeMemo || ""),
-      foods: spotBestDish(spot),
-      bestDish: spotBestDish(spot),
-      cost: String(spot.cost || ""),
-      rating: ratingRank(spot.ratingRank || spot.rating, "B"),
-      revisit: spot.revisit === "いいえ" ? "いいえ" : "はい",
-      memo: String(spot.memo || ""),
-      photos: normalizePhotos(spot.photos),
-      createdAt: String(spot.createdAt || new Date().toISOString())
+      id: safeStorageId(source.id, "spot"),
+      order: String(source.order || ""),
+      name: String(source.name || ""),
+      category: String(source.category || "その他"),
+      area: String(source.area || ""),
+      address: String(source.address || ""),
+      mapCandidateName: String(source.mapCandidateName || ""),
+      googleMapsUrl: googleMapsUrl(lat, lng),
+      lat,
+      lng,
+      drinks: String(source.drinks || ""),
+      drinkCounts: normalizeDrinkCounts(source.drinkCounts),
+      sakeType: String(source.sakeType || ""),
+      sakeBrand: String(source.sakeBrand || ""),
+      sakeMaker: String(source.sakeMaker || ""),
+      sakeTaste: String(source.sakeTaste || ""),
+      sakeRating: String(source.sakeRating || ""),
+      drinkAgain: source.drinkAgain === "いいえ" ? "いいえ" : source.drinkAgain === "はい" ? "はい" : "",
+      sakeMemo: String(source.sakeMemo || ""),
+      foods: bestDish,
+      bestDish,
+      cost: String(source.cost || ""),
+      rating: ratingRank(source.ratingRank || source.rating, "B"),
+      revisit: source.revisit === "いいえ" ? "いいえ" : "はい",
+      memo: String(source.memo || ""),
+      photos: normalizePhotos(source.photos),
+      createdAt: String(source.createdAt || new Date().toISOString())
     };
   }
 
   function normalizeSession(session) {
+    const source = session && typeof session === "object" ? session : {};
     return {
-      id: typeof session.id === "string" && session.id ? session.id : makeId("session"),
-      date: String(session.date || ""),
-      title: String(session.title || ""),
-      companions: String(session.companions || ""),
-      overallMemo: String(session.overallMemo || ""),
-      totalCostMemo: String(session.totalCostMemo || session.totalMemo || ""),
-      tags: parseTags(session.tags),
-      spots: Array.isArray(session.spots)
-        ? session.spots.map(normalizeSpot).filter((spot) => Number.isFinite(spot.lat) && Number.isFinite(spot.lng) && spot.name)
+      id: safeStorageId(source.id, "session"),
+      date: String(source.date || ""),
+      title: String(source.title || ""),
+      companions: String(source.companions || ""),
+      overallMemo: String(source.overallMemo || ""),
+      totalCostMemo: String(source.totalCostMemo || source.totalMemo || ""),
+      tags: parseTags(source.tags),
+      spots: Array.isArray(source.spots)
+        ? source.spots.map(normalizeSpot).filter((spot) => Number.isFinite(spot.lat) && Number.isFinite(spot.lng) && spot.name)
         : [],
-      createdAt: String(session.createdAt || new Date().toISOString()),
-      updatedAt: String(session.updatedAt || new Date().toISOString())
+      createdAt: String(source.createdAt || new Date().toISOString()),
+      updatedAt: String(source.updatedAt || new Date().toISOString())
     };
   }
 
@@ -365,15 +380,25 @@
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
       state.sessions = validateImportedSessions(saved);
+      state.recordsLoadFailed = false;
     } catch (error) {
       state.sessions = [];
-      showStatus("保存データを読み込めませんでした。新しい記録として開始します。", "error");
+      state.recordsLoadFailed = true;
+      showStatus("保存データの読み込みに失敗しました。ブラウザ内のデータが破損している可能性があります。新規保存を行う前に、通常JSONバックアップがある場合はインポートで復元してください。", "error");
     }
 
     state.activeSessionId = state.sessions[0]?.id || null;
   }
 
   function saveSessions() {
+    if (state.recordsLoadFailed) {
+      const proceed = confirm("保存データの読み込みに失敗しているため、このまま保存するとブラウザ内の既存データを上書きする可能性があります。実行前に通常JSONバックアップからの復元を確認することをおすすめします。保存を続けますか？");
+      if (!proceed) {
+        showStatus("保存を中止しました。通常JSONバックアップがある場合はインポートで復元してください。", "warning");
+        return false;
+      }
+      state.recordsLoadFailed = false;
+    }
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state.sessions));
       return true;
@@ -402,10 +427,16 @@
   }
 
   function saveSettings() {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify({
-      pinDisplayMode: state.pinDisplayMode === "all" ? "all" : "active",
-      routeVisible: Boolean(state.routeVisible)
-    }));
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+        pinDisplayMode: state.pinDisplayMode === "all" ? "all" : "active",
+        routeVisible: Boolean(state.routeVisible)
+      }));
+      return true;
+    } catch (error) {
+      showStatus("表示設定の保存に失敗しました。ブラウザの保存容量やプライベートモードの設定を確認してください。", "warning");
+      return false;
+    }
   }
 
   function getActiveSession() {
@@ -520,7 +551,12 @@
   }
 
   function googleMapsUrl(lat, lng) {
-    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${lat},${lng}`)}`;
+    const latNumber = Number(lat);
+    const lngNumber = Number(lng);
+    if (!Number.isFinite(latNumber) || !Number.isFinite(lngNumber)) {
+      return "";
+    }
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${latNumber},${lngNumber}`)}`;
   }
 
   function monthKey(dateText) {
@@ -751,7 +787,13 @@
   }
 
   function saveTagSettings() {
-    localStorage.setItem(TAG_SETTINGS_KEY, JSON.stringify(state.tagCandidates));
+    try {
+      localStorage.setItem(TAG_SETTINGS_KEY, JSON.stringify(state.tagCandidates));
+      return true;
+    } catch (error) {
+      showStatus("タグ設定の保存に失敗しました。ブラウザの保存容量やプライベートモードの設定を確認してください。", "warning");
+      return false;
+    }
   }
 
   function getTagCandidates() {
@@ -971,8 +1013,8 @@
     elements.mapCandidateName.textContent = candidate.name || "未取得";
     elements.mapCandidateAddress.textContent = candidate.address || "未取得";
     elements.applyCandidateNameButton.disabled = !candidate.name;
-    const url = candidate.googleMapsUrl || googleMapsUrl(elements.spotLat.value || 0, elements.spotLng.value || 0);
-    elements.googleMapsLink.href = url;
+    const url = googleMapsUrl(elements.spotLat.value, elements.spotLng.value);
+    elements.googleMapsLink.href = url || "#";
   }
 
   function clearMapCandidate() {
@@ -1292,7 +1334,7 @@
     state.mapCandidate = {
       name: spot.mapCandidateName || "",
       address: spot.address || "",
-      googleMapsUrl: spot.googleMapsUrl || googleMapsUrl(spot.lat, spot.lng)
+      googleMapsUrl: googleMapsUrl(spot.lat, spot.lng)
     };
     fillSessionForm(session);
     elements.spotDialogTitle.textContent = "スポット編集";
@@ -1341,7 +1383,7 @@
       area: elements.spotArea.value.trim(),
       address: elements.spotAddress.value.trim(),
       mapCandidateName: String(state.mapCandidate?.name || "").trim(),
-      googleMapsUrl: String(state.mapCandidate?.googleMapsUrl || googleMapsUrl(lat, lng)),
+      googleMapsUrl: googleMapsUrl(lat, lng),
       lat,
       lng,
       drinks: elements.drinks.value.trim(),
@@ -1617,7 +1659,7 @@
         }).addTo(map);
         marker.bindPopup(`
           <strong>${escapeHtml(spot.name)}</strong><br>
-          ${firstPhoto ? `<button class="photo-open-button" type="button" data-action="view-photos" data-session-id="${session.id}" data-spot-id="${spot.id}" data-photo-index="0"><img class="popup-thumb" src="${photoDataUrl(firstPhoto)}" alt="${escapeHtml(spot.name)}の写真"></button>` : ""}
+          ${firstPhoto ? `<button class="photo-open-button" type="button" data-action="view-photos" data-session-id="${idAttr(session.id)}" data-spot-id="${idAttr(spot.id)}" data-photo-index="0"><img class="popup-thumb" src="${photoDataUrl(firstPhoto)}" alt="${escapeHtml(spot.name)}の写真"></button>` : ""}
           ${escapeHtml(spot.order)} / ${escapeHtml(session.title)}<br>
           ${escapeHtml(areaLabelForSpot(session, spot))}<br>
           住所: ${escapeHtml(spot.address || "未記入")}<br>
@@ -1628,7 +1670,7 @@
           この店の一品！: ${escapeHtml(spotBestDish(spot) || "未記入")}<br>
           支払額: ${escapeHtml(spot.cost || "未記入")}<br>
           ${escapeHtml(spot.memo || "メモなし")}
-          ${spot.googleMapsUrl ? `<br><a href="${escapeHtml(spot.googleMapsUrl)}" target="_blank" rel="noopener">Googleマップで確認</a>` : ""}
+          ${googleMapsUrl(spot.lat, spot.lng) ? `<br><a href="${escapeHtml(googleMapsUrl(spot.lat, spot.lng))}" target="_blank" rel="noopener">Googleマップで確認</a>` : ""}
         `);
         state.markers.set(spot.id, marker);
       });
@@ -1936,7 +1978,7 @@
           <p class="meta">${escapeHtml(session.date)} / ${escapeHtml(session.title)}</p>
           <p class="meta">銘柄: ${escapeHtml(spot.sakeBrand || "未記入")} / 評価: ${escapeHtml(ratingDisplay(spot.rating))} / おすすめ度: ${escapeHtml(spot.sakeRating || "未記入")}</p>
           <p class="meta">${escapeHtml(spot.memo || spot.sakeMemo || "メモなし")}</p>
-          <button class="link-button" type="button" data-action="focus-spot" data-session-id="${session.id}" data-spot-id="${spot.id}">地図で表示</button>
+          <button class="link-button" type="button" data-action="focus-spot" data-session-id="${idAttr(session.id)}" data-spot-id="${idAttr(spot.id)}">地図で表示</button>
         </article>
       `).join("")
       : '<p class="empty">該当する記録はありません。</p>';
@@ -1975,7 +2017,7 @@
         const memo = String(spot.memo || spot.sakeMemo || "メモなし");
         return `
           <article class="photo-gallery-item">
-            <button class="photo-open-button" type="button" data-action="view-photos" data-session-id="${session.id}" data-spot-id="${spot.id}" data-photo-index="0">
+            <button class="photo-open-button" type="button" data-action="view-photos" data-session-id="${idAttr(session.id)}" data-spot-id="${idAttr(spot.id)}" data-photo-index="0">
               <img class="gallery-thumb" src="${photoDataUrl(firstPhoto)}" alt="${escapeHtml(spot.name)}の写真">
             </button>
             <div>
@@ -1984,8 +2026,8 @@
               <p class="meta">${escapeHtml(areaLabelForSpot(session, spot))} / 銘柄: ${escapeHtml(spot.sakeBrand || "未記入")} / 写真${photos.length}枚</p>
               <p class="meta">${escapeHtml(caption ? `写真メモ: ${caption}` : memo.slice(0, 48))}</p>
               <div class="photo-gallery-actions">
-                <button class="link-button" type="button" data-action="focus-spot" data-session-id="${session.id}" data-spot-id="${spot.id}">このスポットへ移動</button>
-                <button class="link-button danger" type="button" data-action="delete-spot-photos" data-session-id="${session.id}" data-spot-id="${spot.id}">写真を削除</button>
+                <button class="link-button" type="button" data-action="focus-spot" data-session-id="${idAttr(session.id)}" data-spot-id="${idAttr(spot.id)}">このスポットへ移動</button>
+                <button class="link-button danger" type="button" data-action="delete-spot-photos" data-session-id="${idAttr(session.id)}" data-spot-id="${idAttr(spot.id)}">写真を削除</button>
               </div>
             </div>
           </article>
@@ -2246,14 +2288,14 @@
 
   function completedSpotForAutoFix(spot, index) {
     return {
-      id: typeof spot.id === "string" && spot.id ? spot.id : makeId("spot"),
+      id: safeStorageId(spot.id, "spot"),
       order: String(spot.order || `${index + 1}軒目`),
       name: String(spot.name || "名称未設定"),
       category: String(spot.category || "その他"),
       area: String(spot.area || ""),
       address: String(spot.address || ""),
       mapCandidateName: String(spot.mapCandidateName || ""),
-      googleMapsUrl: String(spot.googleMapsUrl || ""),
+      googleMapsUrl: googleMapsUrl(spot.lat, spot.lng),
       lat: Number(spot.lat),
       lng: Number(spot.lng),
       drinks: String(spot.drinks || ""),
@@ -2299,7 +2341,7 @@
     try {
       const rawSessions = rawStoredSessions();
       const fixedSessions = rawSessions.map((session) => ({
-        id: typeof session.id === "string" && session.id ? session.id : makeId("session"),
+        id: safeStorageId(session.id, "session"),
         date: String(session.date || ""),
         title: String(session.title || "無題の飲み会"),
         companions: String(session.companions || ""),
@@ -2451,7 +2493,7 @@
                 <p class="meta">銘柄: ${escapeHtml(spot.sakeBrand || "未記入")} / 評価 ${escapeHtml(ratingDisplay(spot.rating))}</p>
                 <p class="meta">この店の一品！: ${escapeHtml(spotBestDish(spot) || "未記入")}</p>
               </div>
-              <button class="small-button" type="button" data-action="focus-spot" data-session-id="${session.id}" data-spot-id="${spot.id}">地図</button>
+              <button class="small-button" type="button" data-action="focus-spot" data-session-id="${idAttr(session.id)}" data-spot-id="${idAttr(spot.id)}">地図</button>
             </article>
           `).join("")}
         </div>
@@ -2494,7 +2536,7 @@
           const photoCount = photos.length;
           const photoHtml = photoCount ? `
             <div class="spot-photo-row">
-              <button class="photo-open-button" type="button" data-action="view-photos" data-session-id="${session.id}" data-spot-id="${spot.id}" data-photo-index="0">
+              <button class="photo-open-button" type="button" data-action="view-photos" data-session-id="${idAttr(session.id)}" data-spot-id="${idAttr(spot.id)}" data-photo-index="0">
                 <img class="spot-thumb" src="${photoDataUrl(photos[0])}" alt="${escapeHtml(spot.name)}の写真">
               </button>
               <span class="meta">写真${photoCount}枚</span>
@@ -2512,8 +2554,8 @@
                 <div class="meta">この店の一品！: ${escapeHtml(spotBestDish(spot) || "未記入")}</div>
               </div>
               <div class="spot-actions">
-                <button class="small-button" type="button" data-action="edit-spot" data-session-id="${session.id}" data-spot-id="${spot.id}">編集</button>
-                <button class="small-button danger" type="button" data-action="delete-spot" data-session-id="${session.id}" data-spot-id="${spot.id}">削除</button>
+                <button class="small-button" type="button" data-action="edit-spot" data-session-id="${idAttr(session.id)}" data-spot-id="${idAttr(spot.id)}">編集</button>
+                <button class="small-button danger" type="button" data-action="delete-spot" data-session-id="${idAttr(session.id)}" data-spot-id="${idAttr(spot.id)}">削除</button>
               </div>
             </div>
             <div class="meta">${escapeHtml(spot.memo || "メモなし")}</div>
@@ -2530,12 +2572,12 @@
               <h3>${escapeHtml(session.title)}</h3>
               <div class="meta">${escapeHtml(session.date)} / ${escapeHtml(session.companions || "同行者なし")}</div>
             </div>
-            <button class="small-button danger" type="button" data-action="delete-session" data-session-id="${session.id}">削除</button>
+            <button class="small-button danger" type="button" data-action="delete-session" data-session-id="${idAttr(session.id)}">削除</button>
           </div>
           <p class="meta">${escapeHtml(session.overallMemo || "全体メモなし")}</p>
           <p class="meta">支払額合計: ${escapeHtml(formatYen(paymentTotal))}</p>
           <div class="tag-row">${tags || '<span class="tag">タグなし</span>'}</div>
-          <button class="small-button" type="button" data-action="select-session" data-session-id="${session.id}">この記録を編集</button>
+          <button class="small-button" type="button" data-action="select-session" data-session-id="${idAttr(session.id)}">この記録を編集</button>
           <div class="spot-list">${spots}</div>
         </article>
       `;
@@ -2744,7 +2786,7 @@
         spot?.area || "",
         spot?.address || "",
         spot?.mapCandidateName || "",
-        spot?.googleMapsUrl || "",
+        spot ? googleMapsUrl(spot.lat, spot.lng) : "",
         spot ? spot.lat : "",
         spot ? spot.lng : "",
         spot?.drinks || "",
@@ -2977,7 +3019,7 @@
         area: readCsvValue(record, "エリア"),
         address: readCsvValue(record, "住所"),
         mapCandidateName: readCsvValue(record, "地図候補名"),
-        googleMapsUrl: readCsvValue(record, "Googleマップ確認URL") || googleMapsUrl(lat, lng),
+        googleMapsUrl: googleMapsUrl(lat, lng),
         lat,
         lng,
         drinks: readCsvValue(record, "飲んだもの"),
