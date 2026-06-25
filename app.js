@@ -1,15 +1,21 @@
 (function () {
   const STORAGE_KEY = "nomichizu.records.v0.1";
   const SETTINGS_KEY = "sakeichizu.displaySettings.v0.4";
-  const EXPORT_VERSION = "1.2";
+  const EXPORT_VERSION = "1.3";
   const AKITA_CITY = [39.7186, 140.1024];
   const MAX_PHOTOS_PER_SPOT = 3;
   const MAX_PHOTO_EDGE = 1280;
   const JPEG_QUALITY = 0.72;
   const SAKE_TYPES = ["日本酒", "ビール", "焼酎", "ワイン", "ウイスキー", "カクテル", "その他"];
-  const DRINK_COUNT_TYPES = ["ビール", "日本酒", "焼酎", "ワイン", "ウイスキー", "ハイボール", "カクテル", "サワー", "ソフトドリンク", "その他"];
+  const DRINK_COUNT_TYPES = ["水", "ビール", "日本酒", "焼酎", "ワイン", "ウイスキー", "ハイボール", "カクテル", "サワー", "ソフトドリンク", "その他"];
   const NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse";
   const DEFAULT_AREAS = ["秋田駅前", "川反", "大町", "山王", "土崎", "能代", "仙台", "東京", "旅行先", "その他"];
+  const REGION_TAGS = ["秋田駅前", "川反", "大町", "山王", "土崎", "能代", "仙台", "東京", "旅行先"];
+  const DEFAULT_TAGS = [
+    "一人飲み", "友人", "職場", "家族", "旅行", "出張", "二次会", "三次会",
+    "秋田駅前", "川反", "大町", "山王", "土崎", "能代", "仙台", "東京",
+    "日本酒", "ビール", "焼鳥", "ラーメン", "バー", "再訪したい", "接待向き", "記念日"
+  ];
   const CATEGORY_STYLES = {
     "居酒屋": { color: "#a9442a", short: "居" },
     "日本酒": { color: "#356a48", short: "酒" },
@@ -50,6 +56,7 @@
     overallMemo: document.querySelector("#overallMemo"),
     totalCostMemo: document.querySelector("#totalCostMemo"),
     tags: document.querySelector("#tags"),
+    tagCheckboxList: document.querySelector("#tagCheckboxList"),
     sessionHint: document.querySelector("#sessionHint"),
     newSessionButton: document.querySelector("#newSessionButton"),
     locateButton: document.querySelector("#locateButton"),
@@ -57,6 +64,8 @@
     recordCount: document.querySelector("#recordCount"),
     listPanel: document.querySelector(".list-panel"),
     sessionList: document.querySelector("#sessionList"),
+    activeSessionSummary: document.querySelector("#activeSessionSummary"),
+    activeSpotList: document.querySelector("#activeSpotList"),
     summaryStats: document.querySelector("#summaryStats"),
     sakeTypeStats: document.querySelector("#sakeTypeStats"),
     sakeRatingStats: document.querySelector("#sakeRatingStats"),
@@ -156,7 +165,11 @@
   }
 
   function todayText() {
-    return new Date().toISOString().slice(0, 10);
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, "0");
+    const day = String(today.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
   }
 
   function escapeHtml(value) {
@@ -299,8 +312,8 @@
       title: String(session.title || ""),
       companions: String(session.companions || ""),
       overallMemo: String(session.overallMemo || ""),
-      totalCostMemo: String(session.totalCostMemo || ""),
-      tags: Array.isArray(session.tags) ? session.tags.map(String).filter(Boolean) : [],
+      totalCostMemo: String(session.totalCostMemo || session.totalMemo || ""),
+      tags: parseTags(session.tags),
       spots: Array.isArray(session.spots)
         ? session.spots.map(normalizeSpot).filter((spot) => Number.isFinite(spot.lat) && Number.isFinite(spot.lng) && spot.name)
         : [],
@@ -636,11 +649,71 @@
     return `${uniqueValues.slice(0, limit).join("、")}${suffix}`;
   }
 
+  function sessionRegionTags(session) {
+    const tags = parseTags(session?.tags || []);
+    return tags.filter((tag) => REGION_TAGS.includes(tag));
+  }
+
+  function areaKeysForRecord(session, spot) {
+    const existingArea = String(spot?.area || "").trim();
+    if (existingArea) {
+      return [existingArea];
+    }
+    const regionTags = sessionRegionTags(session);
+    return regionTags.length ? regionTags : ["エリア未設定"];
+  }
+
+  function areaLabelForSpot(session, spot) {
+    const existingArea = String(spot?.area || "").trim();
+    if (existingArea) {
+      return `既存エリア ${existingArea}`;
+    }
+    const regionTags = sessionRegionTags(session);
+    return regionTags.length ? `地域タグ ${regionTags.join("、")}` : "地域未設定";
+  }
+
   function getAreaCandidates() {
     const savedAreas = getSpotRecords()
       .map(({ spot }) => String(spot.area || "").trim())
       .filter(Boolean);
-    return [...new Set([...DEFAULT_AREAS, ...savedAreas])].sort((a, b) => a.localeCompare(b, "ja"));
+    return [...new Set([...DEFAULT_AREAS, ...REGION_TAGS, ...savedAreas])].sort((a, b) => a.localeCompare(b, "ja"));
+  }
+
+  function getTagCandidates() {
+    const savedTags = state.sessions.flatMap((session) => parseTags(session.tags));
+    return [...new Set([...DEFAULT_TAGS, ...savedTags])];
+  }
+
+  function selectedTagCheckboxValues() {
+    return [...elements.tagCheckboxList.querySelectorAll("input[type='checkbox']:checked")]
+      .map((input) => input.value)
+      .filter(Boolean);
+  }
+
+  function readSessionTagsFromForm() {
+    return [...new Set([
+      ...selectedTagCheckboxValues(),
+      ...parseTags(elements.tags.value)
+    ])];
+  }
+
+  function renderTagCheckboxes(selectedTags = readSessionTagsFromForm()) {
+    const selected = new Set(parseTags(selectedTags));
+    elements.tagCheckboxList.innerHTML = getTagCandidates().map((tag) => `
+      <label class="tag-checkbox">
+        <input type="checkbox" value="${escapeHtml(tag)}" ${selected.has(tag) ? "checked" : ""}>
+        <span>${escapeHtml(tag)}</span>
+      </label>
+    `).join("");
+  }
+
+  function setTagFormValues(tags) {
+    const normalizedTags = parseTags(tags);
+    const candidateSet = new Set(getTagCandidates());
+    const checkedTags = normalizedTags.filter((tag) => candidateSet.has(tag));
+    const freeTags = normalizedTags.filter((tag) => !candidateSet.has(tag));
+    renderTagCheckboxes(checkedTags);
+    elements.tags.value = freeTags.join(", ");
   }
 
   function renderAreaOptions() {
@@ -934,7 +1007,7 @@
     elements.companions.value = session.companions || "";
     elements.overallMemo.value = session.overallMemo || "";
     elements.totalCostMemo.value = session.totalCostMemo || "";
-    elements.tags.value = (session.tags || []).join(", ");
+    setTagFormValues(session.tags || []);
   }
 
   function resetSessionForm() {
@@ -942,14 +1015,17 @@
     elements.sessionForm.reset();
     elements.sessionDate.value = todayText();
     elements.blogDraft.value = "";
+    elements.totalCostMemo.value = "";
+    setTagFormValues([]);
     render();
   }
 
   function parseTags(value) {
-    return String(value || "")
+    const source = Array.isArray(value) ? value.join(",") : String(value || "");
+    return [...new Set(source
       .split(/[,\s、]+/)
       .map((tag) => tag.trim())
-      .filter(Boolean);
+      .filter(Boolean))];
   }
 
   function handleSessionSubmit(event) {
@@ -962,7 +1038,7 @@
       companions: elements.companions.value.trim(),
       overallMemo: elements.overallMemo.value.trim(),
       totalCostMemo: elements.totalCostMemo.value.trim(),
-      tags: parseTags(elements.tags.value)
+      tags: readSessionTagsFromForm()
     };
 
     if (!payload.title) {
@@ -991,6 +1067,7 @@
       render();
       return;
     }
+    setTagFormValues(payload.tags);
     render();
     showStatus("飲み会記録を保存しました。地図をクリックしてスポットを追加できます。");
   }
@@ -1380,9 +1457,9 @@
           <strong>${escapeHtml(spot.name)}</strong><br>
           ${firstPhoto ? `<button class="photo-open-button" type="button" data-action="view-photos" data-session-id="${session.id}" data-spot-id="${spot.id}" data-photo-index="0"><img class="popup-thumb" src="${photoDataUrl(firstPhoto)}" alt="${escapeHtml(spot.name)}の写真"></button>` : ""}
           ${escapeHtml(spot.order)} / ${escapeHtml(session.title)}<br>
-          エリア: ${escapeHtml(spot.area || "未記入")}<br>
+          ${escapeHtml(areaLabelForSpot(session, spot))}<br>
           住所: ${escapeHtml(spot.address || "未記入")}<br>
-          飲んだもの: ${escapeHtml(spotDrinkText(spot))}<br>
+          飲み物: ${escapeHtml(spotDrinkText(spot))}<br>
           銘柄: ${escapeHtml(spot.sakeBrand || "未記入")}<br>
           おすすめ度: ${escapeHtml(spot.sakeRating || "未記入")}<br>
           支払額: ${escapeHtml(spot.cost || "未記入")}<br>
@@ -1632,31 +1709,32 @@
   function areaSummaryRows(records = getSpotRecords()) {
     const groups = new Map();
     records.forEach(({ session, spot }) => {
-      const rawArea = String(spot.area || "").trim();
-      const area = rawArea || "エリア未設定";
-      if (!groups.has(area)) {
-        groups.set(area, {
-          area,
-          searchTerm: rawArea,
-          sessions: new Set(),
-          spots: 0,
-          sakeLogs: 0,
-          ratings: [],
-          sakeRatings: [],
-          drinkAgain: 0,
-          revisit: 0
-        });
-      }
-      const group = groups.get(area);
-      group.sessions.add(session.id);
-      group.spots += 1;
-      if (hasSakeLog(spot)) group.sakeLogs += 1;
-      const rating = ratingNumber(spot.rating);
-      const sakeRating = ratingNumber(spot.sakeRating);
-      if (rating !== null) group.ratings.push(rating);
-      if (sakeRating !== null) group.sakeRatings.push(sakeRating);
-      if (spot.drinkAgain === "はい") group.drinkAgain += 1;
-      if (spot.revisit === "はい") group.revisit += 1;
+      areaKeysForRecord(session, spot).forEach((area) => {
+        const searchTerm = area === "エリア未設定" ? "" : area;
+        if (!groups.has(area)) {
+          groups.set(area, {
+            area,
+            searchTerm,
+            sessions: new Set(),
+            spots: 0,
+            sakeLogs: 0,
+            ratings: [],
+            sakeRatings: [],
+            drinkAgain: 0,
+            revisit: 0
+          });
+        }
+        const group = groups.get(area);
+        group.sessions.add(session.id);
+        group.spots += 1;
+        if (hasSakeLog(spot)) group.sakeLogs += 1;
+        const rating = ratingNumber(spot.rating);
+        const sakeRating = ratingNumber(spot.sakeRating);
+        if (rating !== null) group.ratings.push(rating);
+        if (sakeRating !== null) group.sakeRatings.push(sakeRating);
+        if (spot.drinkAgain === "はい") group.drinkAgain += 1;
+        if (spot.revisit === "はい") group.revisit += 1;
+      });
     });
 
     return [...groups.values()]
@@ -1739,7 +1817,7 @@
             <div>
               <h3>${escapeHtml(spot.name)}</h3>
               <p class="meta">${escapeHtml(session.date)} / ${escapeHtml(session.title)}</p>
-              <p class="meta">エリア: ${escapeHtml(spot.area || "未記入")} / 銘柄: ${escapeHtml(spot.sakeBrand || "未記入")} / 写真${photos.length}枚</p>
+              <p class="meta">${escapeHtml(areaLabelForSpot(session, spot))} / 銘柄: ${escapeHtml(spot.sakeBrand || "未記入")} / 写真${photos.length}枚</p>
               <p class="meta">${escapeHtml(caption ? `写真メモ: ${caption}` : memo.slice(0, 48))}</p>
               <div class="photo-gallery-actions">
                 <button class="link-button" type="button" data-action="focus-spot" data-session-id="${session.id}" data-spot-id="${spot.id}">このスポットへ移動</button>
@@ -2040,7 +2118,7 @@
         title: String(session.title || "無題の飲み会"),
         companions: String(session.companions || ""),
         overallMemo: String(session.overallMemo || ""),
-        totalCostMemo: String(session.totalCostMemo || ""),
+        totalCostMemo: String(session.totalCostMemo || session.totalMemo || ""),
         tags: Array.isArray(session.tags) ? session.tags.map(String).filter(Boolean) : parseTags(session.tags),
         spots: Array.isArray(session.spots)
           ? session.spots.map(completedSpotForAutoFix)
@@ -2154,6 +2232,46 @@
     renderFavorites(records);
   }
 
+  function renderActiveSessionPanel() {
+    const session = getActiveSession();
+    if (!session) {
+      elements.activeSessionSummary.innerHTML = '<p class="empty">飲み会記録を保存すると、ここに今回の概要が表示されます。</p>';
+      elements.activeSpotList.innerHTML = "";
+      return;
+    }
+
+    const tags = parseTags(session.tags);
+    const spots = getSortedSpots(session);
+    elements.activeSessionSummary.innerHTML = `
+      <div class="active-summary-grid">
+        <div><span>日付</span><strong>${escapeHtml(session.date || "未設定")}</strong></div>
+        <div><span>タイトル</span><strong>${escapeHtml(session.title || "無題")}</strong></div>
+        <div><span>支払額合計</span><strong>${escapeHtml(formatYen(sessionAmount(session)))}</strong></div>
+        <div><span>スポット数</span><strong>${spots.length}件</strong></div>
+      </div>
+      <div class="tag-row">${tags.length ? tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("") : '<span class="tag">タグなし</span>'}</div>
+    `;
+
+    elements.activeSpotList.innerHTML = spots.length
+      ? `
+        <h3>今回のスポット</h3>
+        <div class="compact-spot-list">
+          ${spots.map((spot) => `
+            <article class="compact-spot-item">
+              <div>
+                <strong>${escapeHtml(spot.order || "")} ${escapeHtml(spot.name)}</strong>
+                <p class="meta">${escapeHtml(spot.category)} / ${escapeHtml(areaLabelForSpot(session, spot))}</p>
+                <p class="meta">飲み物: ${escapeHtml(spotDrinkText(spot))} / 支払額 ${escapeHtml(spot.cost || "未記入")}</p>
+                <p class="meta">銘柄: ${escapeHtml(spot.sakeBrand || "未記入")} / 評価 ${escapeHtml(spot.rating || "未記入")}</p>
+              </div>
+              <button class="small-button" type="button" data-action="focus-spot" data-session-id="${session.id}" data-spot-id="${spot.id}">地図</button>
+            </article>
+          `).join("")}
+        </div>
+      `
+      : '<p class="empty">今回のスポットはまだありません。地図をクリックして追加できます。</p>';
+  }
+
   function renderSessions() {
     const visibleSessions = state.sessions.filter(sessionMatchesSearch);
     elements.recordCount.textContent = state.searchQuery
@@ -2200,9 +2318,9 @@
             <div class="spot-top">
               <div>
                 <strong>${escapeHtml(spot.order)} ${escapeHtml(spot.name)}</strong>
-                <div class="meta">${escapeHtml(spot.category)} / エリア ${escapeHtml(spot.area || "未記入")} / 評価 ${escapeHtml(spot.rating)} / 再訪 ${escapeHtml(spot.revisit)}</div>
+                <div class="meta">${escapeHtml(spot.category)} / ${escapeHtml(areaLabelForSpot(session, spot))} / 評価 ${escapeHtml(spot.rating)} / 再訪 ${escapeHtml(spot.revisit)}</div>
                 <div class="meta">住所: ${escapeHtml(spot.address || "未記入")}</div>
-                <div class="meta">飲んだもの: ${escapeHtml(spotDrinkText(spot))} / 支払額 ${escapeHtml(spot.cost || "未記入")}</div>
+                <div class="meta">飲み物: ${escapeHtml(spotDrinkText(spot))} / 支払額 ${escapeHtml(spot.cost || "未記入")}</div>
                 <div class="meta">酒ログ: ${escapeHtml(spot.sakeType || "種類未記入")} / ${escapeHtml(spot.sakeBrand || "銘柄未記入")} / おすすめ度 ${escapeHtml(spot.sakeRating || "未記入")} / もう一度 ${escapeHtml(spot.drinkAgain || "未記入")}</div>
               </div>
               <div class="spot-actions">
@@ -2227,7 +2345,7 @@
             <button class="small-button danger" type="button" data-action="delete-session" data-session-id="${session.id}">削除</button>
           </div>
           <p class="meta">${escapeHtml(session.overallMemo || "全体メモなし")}</p>
-          <p class="meta">支払額合計: ${escapeHtml(formatYen(paymentTotal))} / 総額メモ: ${escapeHtml(session.totalCostMemo || "未記入")}</p>
+          <p class="meta">支払額合計: ${escapeHtml(formatYen(paymentTotal))}</p>
           <div class="tag-row">${tags || '<span class="tag">タグなし</span>'}</div>
           <button class="small-button" type="button" data-action="select-session" data-session-id="${session.id}">この記録を編集</button>
           <div class="spot-list">${spots}</div>
@@ -2261,7 +2379,8 @@
           `カテゴリ：${plain(spot.category)}`,
           `住所：${plain(spot.address)}`,
           `地図候補名：${plain(spot.mapCandidateName)}`,
-          `飲んだもの：${plain(spotDrinkText(spot, ""))}`,
+          `飲み物カウント：${plain(formatDrinkCounts(spot.drinkCounts, ""))}`,
+          `飲んだものメモ：${plain(spot.drinks)}`,
           `写真：${photos.length ? `${photos.length}枚` : "なし"}`,
           captions ? `写真キャプション：${captions}` : "",
           "### 酒ログ",
@@ -2292,7 +2411,6 @@
       `日付：${plain(session.date)}`,
       `同行者：${plain(session.companions, "同行者なし")}`,
       `支払額合計：${formatYen(sessionAmount(session))}`,
-      `総額メモ：${plain(session.totalCostMemo)}（割り勘や端数などの補足）`,
       `タグ：${session.tags.length ? session.tags.join("、") : "タグなし"}`,
       "",
       "## 全体メモ",
@@ -2793,6 +2911,7 @@
     renderAreaOptions();
     renderCategoryLegend();
     renderInsights();
+    renderActiveSessionPanel();
     renderSessions();
     renderMarkers();
     renderRoute();
@@ -2958,6 +3077,8 @@
   elements.sessionDate.value = todayText();
   if (state.activeSessionId) {
     fillSessionForm(getActiveSession());
+  } else {
+    setTagFormValues([]);
   }
   render();
 }());

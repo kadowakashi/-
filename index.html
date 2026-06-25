@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>さけいちず v1.2</title>
+  <title>さけいちず v1.3</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="style.css">
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -14,7 +14,7 @@
     <div>
       <p class="eyebrow">地図と日記で残す飲み歩き記録</p>
       <h1>さけいちず</h1>
-      <p class="app-version">さけいちず v1.2</p>
+      <p class="app-version">さけいちず v1.3</p>
     </div>
     <button id="locateButton" class="button secondary locate-button" type="button">現在地を取得</button>
   </header>
@@ -25,6 +25,17 @@
         <h2 id="sessionFormTitle">飲み会記録</h2>
         <button id="newSessionButton" class="button ghost" type="button">新規</button>
       </div>
+
+      <details class="guide-panel" open>
+        <summary>使い方ガイド</summary>
+        <ol>
+          <li>飲み会記録を作成します。</li>
+          <li>地図をクリックして店・スポットを追加します。</li>
+          <li>飲み物カウント、銘柄、写真を素早く残します。</li>
+          <li>検索・集計・写真一覧で記録を振り返ります。</li>
+          <li>大きな操作の前は、通常JSONエクスポートでバックアップします。</li>
+        </ol>
+      </details>
 
       <form id="sessionForm" class="form-stack">
         <label>
@@ -43,58 +54,18 @@
           全体メモ
           <textarea id="overallMemo" rows="3" placeholder="その日の雰囲気や印象"></textarea>
         </label>
+        <input id="totalCostMemo" type="hidden">
+        <div class="field-group">
+          <span class="field-label">タグ候補</span>
+          <div id="tagCheckboxList" class="tag-checkbox-list" aria-label="タグ候補"></div>
+        </div>
         <label>
-          総額メモ
-          <input id="totalCostMemo" type="text" placeholder="例：約12,000円">
-        </label>
-        <label>
-          タグ
-          <input id="tags" type="text" placeholder="例：友人, 二次会, 地酒, 秋田市">
+          自由タグ
+          <textarea id="tags" rows="2" placeholder="例：地酒巡り, はしご酒&#10;カンマ・スペース・改行で追加できます"></textarea>
         </label>
         <button class="button primary" type="submit">飲み会を保存</button>
       </form>
       <p id="sessionHint" class="hint">まず飲み会記録を保存してから、地図をクリックしてスポットを追加します。</p>
-
-      <details class="guide-panel" open>
-        <summary>使い方ガイド</summary>
-        <ol>
-          <li>飲み会記録を作成します。</li>
-          <li>地図をクリックして店・スポットを追加します。</li>
-          <li>酒ログや写真、キャプションを入力します。</li>
-          <li>検索・集計・写真一覧で記録を振り返ります。</li>
-          <li>大きな操作の前は、通常JSONエクスポートでバックアップします。</li>
-        </ol>
-      </details>
-
-      <div class="tool-panel" aria-labelledby="blogDraftTitle">
-        <div class="section-title">
-          <h2 id="blogDraftTitle">ブログ下書き</h2>
-          <button id="generateBlogButton" class="button ghost" type="button">ブログ下書きを作成</button>
-        </div>
-        <label>
-          生成された文章
-          <textarea id="blogDraft" class="draft-area" rows="10" placeholder="選択中の飲み会からブログ下書きを作成できます。"></textarea>
-        </label>
-        <button id="copyBlogButton" class="button secondary" type="button">コピー</button>
-      </div>
-
-      <div class="tool-panel" aria-labelledby="dataToolsTitle">
-        <div class="section-title">
-          <h2 id="dataToolsTitle">データ入出力</h2>
-        </div>
-        <div class="button-row">
-          <button id="exportJsonButton" class="button ghost" type="button">JSONエクスポート</button>
-          <button id="exportLightJsonButton" class="button ghost" type="button">写真なしJSONエクスポート</button>
-          <button id="exportCsvButton" class="button ghost" type="button">CSVエクスポート</button>
-          <button id="exportMonthlyCsvButton" class="button ghost" type="button">月別CSVエクスポート</button>
-          <button id="exportAreaCsvButton" class="button ghost" type="button">エリア別CSVエクスポート</button>
-          <button id="importJsonButton" class="button ghost" type="button">JSONインポート</button>
-          <button id="importCsvButton" class="button ghost" type="button">CSVインポート</button>
-        </div>
-        <p class="backup-note">インポート、写真削除、エリア統合の前は、通常JSONで写真込みバックアップを作成してください。</p>
-        <input id="jsonImportFile" class="visually-hidden" type="file" accept="application/json,.json">
-        <input id="csvImportFile" class="visually-hidden" type="file" accept=".csv,text/csv">
-      </div>
     </section>
 
     <section class="map-wrap" aria-label="地図">
@@ -124,6 +95,13 @@
         <h2 id="recordsTitle">登録済み記録</h2>
         <span id="recordCount" class="count-label">0件</span>
       </div>
+      <section class="active-session-panel" aria-labelledby="activeSessionTitle">
+        <div class="section-title">
+          <h2 id="activeSessionTitle">今回の飲み会</h2>
+        </div>
+        <div id="activeSessionSummary" class="active-session-summary"></div>
+        <div id="activeSpotList" class="active-spot-list"></div>
+      </section>
       <label class="search-box">
         検索
         <input id="recordSearch" type="search" placeholder="タイトル、タグ、店名、メモなど">
@@ -209,6 +187,36 @@
         <div id="photoGalleryList" class="photo-gallery-list"></div>
       </details>
 
+      <details class="insight-panel">
+        <summary id="blogDraftTitle">ブログ下書き</summary>
+        <div class="tool-panel">
+          <button id="generateBlogButton" class="button ghost" type="button">ブログ下書きを作成</button>
+          <label>
+            生成された文章
+            <textarea id="blogDraft" class="draft-area" rows="10" placeholder="選択中の飲み会からブログ下書きを作成できます。"></textarea>
+          </label>
+          <button id="copyBlogButton" class="button secondary" type="button">コピー</button>
+        </div>
+      </details>
+
+      <details class="insight-panel">
+        <summary id="dataToolsTitle">データ入出力</summary>
+        <div class="tool-panel">
+          <div class="button-row">
+            <button id="exportJsonButton" class="button ghost" type="button">JSONエクスポート</button>
+            <button id="exportLightJsonButton" class="button ghost" type="button">写真なしJSONエクスポート</button>
+            <button id="exportCsvButton" class="button ghost" type="button">CSVエクスポート</button>
+            <button id="exportMonthlyCsvButton" class="button ghost" type="button">月別CSVエクスポート</button>
+            <button id="exportAreaCsvButton" class="button ghost" type="button">エリア別CSVエクスポート</button>
+            <button id="importJsonButton" class="button ghost" type="button">JSONインポート</button>
+            <button id="importCsvButton" class="button ghost" type="button">CSVインポート</button>
+          </div>
+          <p class="backup-note">インポート、写真削除、エリア統合の前は、通常JSONで写真込みバックアップを作成してください。</p>
+          <input id="jsonImportFile" class="visually-hidden" type="file" accept="application/json,.json">
+          <input id="csvImportFile" class="visually-hidden" type="file" accept=".csv,text/csv">
+        </div>
+      </details>
+
       <div id="sessionList" class="session-list"></div>
     </section>
   </main>
@@ -224,7 +232,7 @@
         <button id="simpleSpotModeButton" class="mode-button" type="button" aria-pressed="true">簡易入力</button>
         <button id="detailSpotModeButton" class="mode-button" type="button" aria-pressed="false">詳細入力</button>
       </div>
-      <p class="simple-mode-note">簡易入力は、店名・エリア・飲んだもの・銘柄・写真・一言メモ・評価だけで素早く保存できます。</p>
+      <p class="simple-mode-note">簡易入力は、店名・飲み物カウント・銘柄・写真・一言メモ・評価だけで素早く保存できます。</p>
 
       <div class="coord-grid detail-field">
         <label>
@@ -257,10 +265,7 @@
         </label>
       </div>
 
-      <label class="quick-field">
-        エリア
-        <input id="spotArea" type="text" list="areaOptions" placeholder="例：秋田駅前、川反、大町、旅行先">
-      </label>
+      <input id="spotArea" type="hidden">
       <datalist id="areaOptions">
         <option value="秋田駅前"></option>
         <option value="川反"></option>
@@ -294,15 +299,16 @@
       </label>
       <div class="form-subsection drink-count-section quick-field">
         <h3>飲み物カウント</h3>
-        <p class="hint">＋/−で杯数を記録できます。0杯の項目は保存されません。</p>
+        <p class="hint">何を何杯飲んだかを記録します。水、ビール、日本酒などを＋/−で残せます。</p>
         <div id="drinkCountControls" class="drink-count-controls"></div>
       </div>
-      <label class="quick-field">
-        飲んだもの
-        <input id="drinks" type="text" placeholder="例：高清水、雪の茅舎">
+      <label class="detail-field">
+        飲んだものメモ
+        <textarea id="drinks" rows="2" placeholder="例：飲み比べセット、店員さんおすすめ、乾杯ビールだけ、水も多めに飲んだ"></textarea>
       </label>
       <div class="form-subsection sake-log-section">
         <h3>酒ログ</h3>
+        <p class="hint">印象に残った銘柄や味のレビューを残したいときに入力します。</p>
         <label class="detail-field">
           酒の種類
           <select id="sakeType">
@@ -410,6 +416,6 @@
       </div>
     </div>
   </dialog>
-  <footer class="app-footer">さけいちず v1.2 / ローカル保存版</footer>
+  <footer class="app-footer">さけいちず v1.3 / ローカル保存版</footer>
 </body>
 </html>
