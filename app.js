@@ -1,7 +1,8 @@
 (function () {
   const STORAGE_KEY = "nomichizu.records.v0.1";
   const SETTINGS_KEY = "sakeichizu.displaySettings.v0.4";
-  const EXPORT_VERSION = "1.3";
+  const TAG_SETTINGS_KEY = "sakeichizu.tagSettings.v1.4";
+  const EXPORT_VERSION = "1.4";
   const AKITA_CITY = [39.7186, 140.1024];
   const MAX_PHOTOS_PER_SPOT = 3;
   const MAX_PHOTO_EDGE = 1280;
@@ -16,6 +17,10 @@
     "秋田駅前", "川反", "大町", "山王", "土崎", "能代", "仙台", "東京",
     "日本酒", "ビール", "焼鳥", "ラーメン", "バー", "再訪したい", "接待向き", "記念日"
   ];
+  const RATING_RANKS = ["S", "A", "B", "C", "D"];
+  const RATING_NUMBER_TO_RANK = { 5: "S", 4: "A", 3: "B", 2: "C", 1: "D" };
+  const RATING_RANK_TO_NUMBER = { S: 5, A: 4, B: 3, C: 2, D: 1 };
+
   const CATEGORY_STYLES = {
     "居酒屋": { color: "#a9442a", short: "居" },
     "日本酒": { color: "#356a48", short: "酒" },
@@ -42,6 +47,7 @@
     routeVisible: true,
     searchQuery: "",
     spotInputMode: "detail",
+    tagCandidates: [],
     mapCandidate: null,
     geocodeRequestId: 0,
     geocodeAbortController: null,
@@ -57,6 +63,14 @@
     totalCostMemo: document.querySelector("#totalCostMemo"),
     tags: document.querySelector("#tags"),
     tagCheckboxList: document.querySelector("#tagCheckboxList"),
+    tagSettingsButton: document.querySelector("#tagSettingsButton"),
+    tagSettingsDialog: document.querySelector("#tagSettingsDialog"),
+    closeTagSettingsDialog: document.querySelector("#closeTagSettingsDialog"),
+    tagSettingsList: document.querySelector("#tagSettingsList"),
+    newTagCandidate: document.querySelector("#newTagCandidate"),
+    addTagCandidateButton: document.querySelector("#addTagCandidateButton"),
+    syncRecordTagsButton: document.querySelector("#syncRecordTagsButton"),
+    resetTagCandidatesButton: document.querySelector("#resetTagCandidatesButton"),
     sessionHint: document.querySelector("#sessionHint"),
     newSessionButton: document.querySelector("#newSessionButton"),
     locateButton: document.querySelector("#locateButton"),
@@ -274,6 +288,10 @@
     return structured || freeText || fallback;
   }
 
+  function spotBestDish(spot) {
+    return String(spot?.bestDish || spot?.foods || spot?.food || spot?.eatenItems || "").trim();
+  }
+
   function normalizeSpot(spot) {
     return {
       id: typeof spot.id === "string" && spot.id ? spot.id : makeId("spot"),
@@ -295,9 +313,10 @@
       sakeRating: String(spot.sakeRating || ""),
       drinkAgain: spot.drinkAgain === "いいえ" ? "いいえ" : spot.drinkAgain === "はい" ? "はい" : "",
       sakeMemo: String(spot.sakeMemo || ""),
-      foods: String(spot.foods || ""),
+      foods: spotBestDish(spot),
+      bestDish: spotBestDish(spot),
       cost: String(spot.cost || ""),
-      rating: String(spot.rating || "3"),
+      rating: ratingRank(spot.ratingRank || spot.rating, "B"),
       revisit: spot.revisit === "いいえ" ? "いいえ" : "はい",
       memo: String(spot.memo || ""),
       photos: normalizePhotos(spot.photos),
@@ -428,9 +447,37 @@
     return Boolean([spot.sakeBrand, spot.sakeType, spot.sakeMaker].some((value) => String(value || "").trim()));
   }
 
+  function ratingRank(value, fallback = "") {
+    const text = String(value ?? "").trim().toUpperCase();
+    if (RATING_RANKS.includes(text)) {
+      return text;
+    }
+    const number = Number(text);
+    if (Number.isFinite(number) && RATING_NUMBER_TO_RANK[number]) {
+      return RATING_NUMBER_TO_RANK[number];
+    }
+    return fallback;
+  }
+
   function ratingNumber(value) {
-    const rating = Number(value);
-    return Number.isFinite(rating) && rating >= 1 && rating <= 5 ? rating : null;
+    const rank = ratingRank(value);
+    return rank ? RATING_RANK_TO_NUMBER[rank] : null;
+  }
+
+  function ratingDisplay(value, fallback = "未記入") {
+    return ratingRank(value) || fallback;
+  }
+
+  function averageRatingText(values) {
+    const validValues = values
+      .map(ratingNumber)
+      .filter((value) => Number.isFinite(value));
+    if (!validValues.length) {
+      return "未記入";
+    }
+    const average = validValues.reduce((sum, value) => sum + value, 0) / validValues.length;
+    const rank = average >= 4.5 ? "S" : average >= 3.5 ? "A" : average >= 2.5 ? "B" : average >= 1.5 ? "C" : "D";
+    return `${rank}相当 (${average.toFixed(1)})`;
   }
 
   function averageText(values) {
@@ -679,9 +726,44 @@
     return [...new Set([...DEFAULT_AREAS, ...REGION_TAGS, ...savedAreas])].sort((a, b) => a.localeCompare(b, "ja"));
   }
 
+  function normalizeTagCandidates(tags) {
+    return [...new Set(parseTags(tags))];
+  }
+
+  function recordTags() {
+    return normalizeTagCandidates(state.sessions.flatMap((session) => parseTags(session.tags)));
+  }
+
+  function loadTagSettings() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(TAG_SETTINGS_KEY) || "null");
+      if (Array.isArray(saved)) {
+        state.tagCandidates = normalizeTagCandidates(saved);
+        if (state.tagCandidates.length) {
+          return;
+        }
+      }
+    } catch (error) {
+      state.tagCandidates = [];
+    }
+    state.tagCandidates = normalizeTagCandidates([...DEFAULT_TAGS, ...recordTags()]);
+    saveTagSettings();
+  }
+
+  function saveTagSettings() {
+    localStorage.setItem(TAG_SETTINGS_KEY, JSON.stringify(state.tagCandidates));
+  }
+
   function getTagCandidates() {
-    const savedTags = state.sessions.flatMap((session) => parseTags(session.tags));
-    return [...new Set([...DEFAULT_TAGS, ...savedTags])];
+    return state.tagCandidates.length ? state.tagCandidates : normalizeTagCandidates(DEFAULT_TAGS);
+  }
+
+  function addTagsToCandidates(tags) {
+    const merged = normalizeTagCandidates([...getTagCandidates(), ...parseTags(tags)]);
+    if (merged.length !== state.tagCandidates.length || merged.some((tag, index) => tag !== state.tagCandidates[index])) {
+      state.tagCandidates = merged;
+      saveTagSettings();
+    }
   }
 
   function selectedTagCheckboxValues() {
@@ -714,6 +796,83 @@
     const freeTags = normalizedTags.filter((tag) => !candidateSet.has(tag));
     renderTagCheckboxes(checkedTags);
     elements.tags.value = freeTags.join(", ");
+  }
+
+  function refreshTagCandidateUi(selectedTags = readSessionTagsFromForm()) {
+    renderTagCheckboxes(selectedTags);
+    renderTagSettingsList();
+  }
+
+  function renderTagSettingsList() {
+    const candidates = getTagCandidates();
+    elements.tagSettingsList.innerHTML = candidates.length
+      ? candidates.map((tag, index) => `
+        <div class="tag-setting-item">
+          <strong>${escapeHtml(tag)}</strong>
+          <div class="tag-setting-actions">
+            <button class="small-button" type="button" data-action="move-tag-up" data-tag-index="${index}" ${index === 0 ? "disabled" : ""}>上へ</button>
+            <button class="small-button" type="button" data-action="move-tag-down" data-tag-index="${index}" ${index === candidates.length - 1 ? "disabled" : ""}>下へ</button>
+            <button class="small-button danger" type="button" data-action="delete-tag-candidate" data-tag-index="${index}">削除</button>
+          </div>
+        </div>
+      `).join("")
+      : '<p class="empty">タグ候補がありません。</p>';
+  }
+
+  function addTagCandidate() {
+    const tag = elements.newTagCandidate.value.trim();
+    const normalized = parseTags(tag);
+    if (!normalized.length) {
+      showStatus("追加するタグを入力してください。", "warning");
+      return;
+    }
+    addTagsToCandidates(normalized);
+    elements.newTagCandidate.value = "";
+    setTagFormValues(readSessionTagsFromForm());
+    renderTagSettingsList();
+    showStatus("タグ候補を追加しました。", "success");
+  }
+
+  function resetTagCandidates() {
+    if (!confirm("タグ候補を初期状態に戻します。過去の飲み会記録についているタグは削除されません。よろしいですか？")) {
+      return;
+    }
+    state.tagCandidates = normalizeTagCandidates(DEFAULT_TAGS);
+    saveTagSettings();
+    setTagFormValues(readSessionTagsFromForm());
+    renderTagSettingsList();
+    showStatus("タグ候補を初期状態に戻しました。", "success");
+  }
+
+  function syncRecordTagsToCandidates() {
+    addTagsToCandidates(recordTags());
+    setTagFormValues(readSessionTagsFromForm());
+    renderTagSettingsList();
+    showStatus("記録中のタグを候補に追加しました。", "success");
+  }
+
+  function updateTagCandidateByAction(action, index) {
+    const candidates = [...getTagCandidates()];
+    if (!Number.isInteger(index) || index < 0 || index >= candidates.length) {
+      return;
+    }
+    if (action === "delete-tag-candidate") {
+      const tag = candidates[index];
+      if (!confirm(`タグ候補「${tag}」を削除します。過去の飲み会記録についているタグは残ります。よろしいですか？`)) {
+        return;
+      }
+      candidates.splice(index, 1);
+    }
+    if (action === "move-tag-up" && index > 0) {
+      [candidates[index - 1], candidates[index]] = [candidates[index], candidates[index - 1]];
+    }
+    if (action === "move-tag-down" && index < candidates.length - 1) {
+      [candidates[index], candidates[index + 1]] = [candidates[index + 1], candidates[index]];
+    }
+    state.tagCandidates = normalizeTagCandidates(candidates);
+    saveTagSettings();
+    setTagFormValues(readSessionTagsFromForm());
+    renderTagSettingsList();
   }
 
   function renderAreaOptions() {
@@ -972,9 +1131,9 @@
         spot.sakeMaker,
         spot.sakeTaste,
         spot.sakeMemo,
-        spot.foods,
+        spotBestDish(spot),
         spot.cost,
-        spot.rating,
+        ratingDisplay(spot.rating, ""),
         spot.revisit,
         spot.memo,
         ...normalizePhotos(spot.photos).map(photoCaption)
@@ -1067,7 +1226,9 @@
       render();
       return;
     }
+    addTagsToCandidates(payload.tags);
     setTagFormValues(payload.tags);
+    renderTagSettingsList();
     render();
     showStatus("飲み会記録を保存しました。地図をクリックしてスポットを追加できます。");
   }
@@ -1106,7 +1267,7 @@
     elements.spotLat.value = latlng.lat.toFixed(6);
     elements.spotLng.value = latlng.lng.toFixed(6);
     elements.spotOrder.value = `${session.spots.length + 1}軒目`;
-    elements.rating.value = "5";
+    elements.rating.value = "B";
     elements.revisit.value = "はい";
     renderPhotoPreview();
     renderDrinkCountControls();
@@ -1151,9 +1312,9 @@
     elements.sakeRating.value = spot.sakeRating;
     elements.drinkAgain.value = spot.drinkAgain;
     elements.sakeMemo.value = spot.sakeMemo;
-    elements.foods.value = spot.foods;
+    elements.foods.value = spotBestDish(spot);
     elements.spotCost.value = spot.cost;
-    elements.rating.value = spot.rating;
+    elements.rating.value = ratingRank(spot.rating, "B");
     elements.revisit.value = spot.revisit;
     elements.spotMemo.value = spot.memo;
     renderPhotoPreview();
@@ -1193,8 +1354,9 @@
       drinkAgain: elements.drinkAgain.value,
       sakeMemo: elements.sakeMemo.value.trim(),
       foods: elements.foods.value.trim(),
+      bestDish: elements.foods.value.trim(),
       cost: elements.spotCost.value.trim(),
-      rating: elements.rating.value,
+      rating: ratingRank(elements.rating.value, "B"),
       revisit: elements.revisit.value,
       memo: elements.spotMemo.value.trim(),
       photos: normalizePhotos(state.editingPhotos)
@@ -1462,6 +1624,8 @@
           飲み物: ${escapeHtml(spotDrinkText(spot))}<br>
           銘柄: ${escapeHtml(spot.sakeBrand || "未記入")}<br>
           おすすめ度: ${escapeHtml(spot.sakeRating || "未記入")}<br>
+          評価: ${escapeHtml(ratingDisplay(spot.rating))}<br>
+          この店の一品！: ${escapeHtml(spotBestDish(spot) || "未記入")}<br>
           支払額: ${escapeHtml(spot.cost || "未記入")}<br>
           ${escapeHtml(spot.memo || "メモなし")}
           ${spot.googleMapsUrl ? `<br><a href="${escapeHtml(spot.googleMapsUrl)}" target="_blank" rel="noopener">Googleマップで確認</a>` : ""}
@@ -1700,7 +1864,7 @@
         <h3>${escapeHtml(row.month)}</h3>
         <p class="meta">飲み会数: ${row.sessions} / スポット数: ${row.spots} / 酒ログ: ${row.sakeLogs} / 写真: ${row.photos}枚</p>
         <p class="meta">支払額合計: ${escapeHtml(formatYen(row.amount))} / 合計杯数: ${row.drinkCups}杯</p>
-        <p class="meta">平均評価: ${escapeHtml(averageText(row.ratings))} / 平均おすすめ度: ${escapeHtml(averageText(row.sakeRatings))}</p>
+        <p class="meta">平均評価: ${escapeHtml(averageRatingText(row.ratings))} / 平均おすすめ度: ${escapeHtml(averageText(row.sakeRatings))}</p>
         <p class="meta">もう一度飲みたい: ${row.drinkAgain} / 再訪したい: ${row.revisit}</p>
       </article>
     `).join("");
@@ -1749,7 +1913,7 @@
         <article class="insight-item">
           <h3>${escapeHtml(row.area)}</h3>
           <p class="meta">スポット数: ${row.spots} / 飲み会数: ${row.sessions.size} / 酒ログ: ${row.sakeLogs}</p>
-          <p class="meta">平均評価: ${escapeHtml(averageText(row.ratings))} / 平均おすすめ度: ${escapeHtml(averageText(row.sakeRatings))}</p>
+          <p class="meta">平均評価: ${escapeHtml(averageRatingText(row.ratings))} / 平均おすすめ度: ${escapeHtml(averageText(row.sakeRatings))}</p>
           <p class="meta">再訪したい: ${row.revisit} / もう一度飲みたい: ${row.drinkAgain}</p>
           ${row.searchTerm ? `<button class="link-button" type="button" data-action="search-term" data-term="${escapeHtml(row.searchTerm)}">このエリアで検索</button>` : ""}
         </article>
@@ -1770,7 +1934,7 @@
         <article class="insight-item">
           <h3>${escapeHtml(spot.name)}</h3>
           <p class="meta">${escapeHtml(session.date)} / ${escapeHtml(session.title)}</p>
-          <p class="meta">銘柄: ${escapeHtml(spot.sakeBrand || "未記入")} / 評価: ${escapeHtml(spot.rating)} / おすすめ度: ${escapeHtml(spot.sakeRating || "未記入")}</p>
+          <p class="meta">銘柄: ${escapeHtml(spot.sakeBrand || "未記入")} / 評価: ${escapeHtml(ratingDisplay(spot.rating))} / おすすめ度: ${escapeHtml(spot.sakeRating || "未記入")}</p>
           <p class="meta">${escapeHtml(spot.memo || spot.sakeMemo || "メモなし")}</p>
           <button class="link-button" type="button" data-action="focus-spot" data-session-id="${session.id}" data-spot-id="${spot.id}">地図で表示</button>
         </article>
@@ -1873,6 +2037,8 @@
     let missingMapFields = 0;
     let missingDrinkCountFields = 0;
     let invalidDrinkCountValues = 0;
+    let missingRatingFields = 0;
+    let invalidRatingValues = 0;
     const unreadableCosts = [];
     let missingPhotosFields = 0;
     let oldPhotoStrings = 0;
@@ -1960,6 +2126,11 @@
         if (isUnreadableAmount(spot.cost)) {
           unreadableCosts.push(spotLabel);
         }
+        if (!Object.prototype.hasOwnProperty.call(spot, "rating")) {
+          missingRatingFields += 1;
+        } else if (!ratingRank(spot.rating)) {
+          invalidRatingValues += 1;
+        }
         ["sakeType", "sakeBrand", "sakeMaker", "sakeTaste", "sakeRating", "drinkAgain", "sakeMemo"].forEach((field) => {
           if (!Object.prototype.hasOwnProperty.call(spot, field)) {
             missingSakeFields += 1;
@@ -2014,6 +2185,20 @@
       issues.push({
         level: "warning",
         text: `${invalidDrinkCountValues}件の飲み物カウントが不正です。自動補正では有効な杯数だけ残します。`,
+        autofixable: true
+      });
+    }
+    if (missingRatingFields) {
+      issues.push({
+        level: "warning",
+        text: `${missingRatingFields}件のスポットで評価項目がありません。Bで補完できます。`,
+        autofixable: true
+      });
+    }
+    if (invalidRatingValues) {
+      issues.push({
+        level: "warning",
+        text: `${invalidRatingValues}件のスポット評価が不正です。S/A/B/C/Dまたは旧1〜5評価に補正できます。`,
         autofixable: true
       });
     }
@@ -2080,9 +2265,10 @@
       sakeRating: String(spot.sakeRating || ""),
       drinkAgain: String(spot.drinkAgain || ""),
       sakeMemo: String(spot.sakeMemo || ""),
-      foods: String(spot.foods || ""),
+      foods: spotBestDish(spot),
+      bestDish: spotBestDish(spot),
       cost: String(spot.cost || ""),
-      rating: String(spot.rating || "3"),
+      rating: ratingRank(spot.ratingRank || spot.rating, "B"),
       revisit: String(spot.revisit || "はい"),
       memo: String(spot.memo || ""),
       photos: normalizePhotos(spot.photos),
@@ -2262,7 +2448,8 @@
                 <strong>${escapeHtml(spot.order || "")} ${escapeHtml(spot.name)}</strong>
                 <p class="meta">${escapeHtml(spot.category)} / ${escapeHtml(areaLabelForSpot(session, spot))}</p>
                 <p class="meta">飲み物: ${escapeHtml(spotDrinkText(spot))} / 支払額 ${escapeHtml(spot.cost || "未記入")}</p>
-                <p class="meta">銘柄: ${escapeHtml(spot.sakeBrand || "未記入")} / 評価 ${escapeHtml(spot.rating || "未記入")}</p>
+                <p class="meta">銘柄: ${escapeHtml(spot.sakeBrand || "未記入")} / 評価 ${escapeHtml(ratingDisplay(spot.rating))}</p>
+                <p class="meta">この店の一品！: ${escapeHtml(spotBestDish(spot) || "未記入")}</p>
               </div>
               <button class="small-button" type="button" data-action="focus-spot" data-session-id="${session.id}" data-spot-id="${spot.id}">地図</button>
             </article>
@@ -2318,10 +2505,11 @@
             <div class="spot-top">
               <div>
                 <strong>${escapeHtml(spot.order)} ${escapeHtml(spot.name)}</strong>
-                <div class="meta">${escapeHtml(spot.category)} / ${escapeHtml(areaLabelForSpot(session, spot))} / 評価 ${escapeHtml(spot.rating)} / 再訪 ${escapeHtml(spot.revisit)}</div>
+                <div class="meta">${escapeHtml(spot.category)} / ${escapeHtml(areaLabelForSpot(session, spot))} / 評価 ${escapeHtml(ratingDisplay(spot.rating))} / 再訪 ${escapeHtml(spot.revisit)}</div>
                 <div class="meta">住所: ${escapeHtml(spot.address || "未記入")}</div>
                 <div class="meta">飲み物: ${escapeHtml(spotDrinkText(spot))} / 支払額 ${escapeHtml(spot.cost || "未記入")}</div>
                 <div class="meta">酒ログ: ${escapeHtml(spot.sakeType || "種類未記入")} / ${escapeHtml(spot.sakeBrand || "銘柄未記入")} / おすすめ度 ${escapeHtml(spot.sakeRating || "未記入")} / もう一度 ${escapeHtml(spot.drinkAgain || "未記入")}</div>
+                <div class="meta">この店の一品！: ${escapeHtml(spotBestDish(spot) || "未記入")}</div>
               </div>
               <div class="spot-actions">
                 <button class="small-button" type="button" data-action="edit-spot" data-session-id="${session.id}" data-spot-id="${spot.id}">編集</button>
@@ -2391,9 +2579,9 @@
           `おすすめ度：${plain(spot.sakeRating)} / 5`,
           `もう一度飲みたい：${plain(spot.drinkAgain)}`,
           `酒メモ：${plain(spot.sakeMemo)}`,
-          `食べたもの：${plain(spot.foods)}`,
+          `この店の一品！：${plain(spotBestDish(spot))}`,
           `支払額：${plain(spot.cost)}`,
-          `評価：${plain(spot.rating)} / 5`,
+          `評価：${ratingDisplay(spot.rating)}`,
           `再訪したい：${plain(spot.revisit)}`,
           `メモ：${plain(spot.memo)}`,
           ""
@@ -2526,7 +2714,7 @@
       "おすすめ度",
       "もう一度飲みたい",
       "酒メモ",
-      "食べたもの",
+      "この店の一品！",
       "支払額",
       "評価",
       "再訪したい",
@@ -2569,9 +2757,9 @@
         spot?.sakeRating || "",
         spot?.drinkAgain || "",
         spot?.sakeMemo || "",
-        spot?.foods || "",
+        spot ? spotBestDish(spot) : "",
         spot?.cost || "",
-        spot?.rating || "",
+        spot ? ratingDisplay(spot.rating, "") : "",
         spot?.revisit || "",
         spot?.memo || "",
         spot?.photos?.length || 0,
@@ -2607,7 +2795,7 @@
         row.photos,
         row.amount,
         row.drinkCups,
-        averageText(row.ratings),
+        averageRatingText(row.ratings),
         averageText(row.sakeRatings),
         row.drinkAgain,
         row.revisit
@@ -2632,7 +2820,7 @@
         row.spots,
         row.sessions.size,
         row.sakeLogs,
-        averageText(row.ratings),
+        averageRatingText(row.ratings),
         averageText(row.sakeRatings),
         row.revisit,
         row.drinkAgain
@@ -2716,6 +2904,17 @@
     return String(record[header] ?? "").trim();
   }
 
+  function readCsvAnyValue(record, headers) {
+    const names = Array.isArray(headers) ? headers : [headers];
+    for (const header of names) {
+      const value = readCsvValue(record, header);
+      if (value) {
+        return value;
+      }
+    }
+    return "";
+  }
+
   function parseNumberValue(value) {
     const number = Number(String(value || "").trim());
     return Number.isFinite(number) ? number : null;
@@ -2790,9 +2989,10 @@
         sakeRating: readCsvValue(record, "おすすめ度"),
         drinkAgain: readCsvValue(record, "もう一度飲みたい"),
         sakeMemo: readCsvValue(record, "酒メモ"),
-        foods: readCsvValue(record, "食べたもの"),
+        foods: readCsvAnyValue(record, ["この店の一品！", "食べたもの"]),
+        bestDish: readCsvAnyValue(record, ["この店の一品！", "食べたもの"]),
         cost: readCsvValue(record, "支払額"),
-        rating: readCsvValue(record, "評価") || "3",
+        rating: ratingRank(readCsvValue(record, "評価"), "B"),
         revisit: readCsvValue(record, "再訪したい") || "はい",
         memo: readCsvValue(record, "スポットメモ"),
         photos: [],
@@ -2831,6 +3031,7 @@
           render();
           return;
         }
+        addTagsToCandidates(recordTags());
         if (state.activeSessionId) {
           fillSessionForm(getActiveSession());
         }
@@ -2884,6 +3085,7 @@
           render();
           return;
         }
+        addTagsToCandidates(recordTags());
         if (state.activeSessionId) {
           fillSessionForm(getActiveSession());
         } else {
@@ -2935,6 +3137,28 @@
   elements.duplicateCheckButton.addEventListener("click", runDuplicateCheck);
   elements.deleteAllPhotosButton.addEventListener("click", deleteAllPhotos);
   elements.mergeAreaButton.addEventListener("click", mergeAreas);
+  elements.tagSettingsButton.addEventListener("click", () => {
+    renderTagSettingsList();
+    elements.tagSettingsDialog.showModal();
+    elements.newTagCandidate.focus();
+  });
+  elements.closeTagSettingsDialog.addEventListener("click", () => elements.tagSettingsDialog.close());
+  elements.addTagCandidateButton.addEventListener("click", addTagCandidate);
+  elements.syncRecordTagsButton.addEventListener("click", syncRecordTagsToCandidates);
+  elements.resetTagCandidatesButton.addEventListener("click", resetTagCandidates);
+  elements.newTagCandidate.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addTagCandidate();
+    }
+  });
+  elements.tagSettingsList.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button) {
+      return;
+    }
+    updateTagCandidateByAction(button.dataset.action, Number(button.dataset.tagIndex));
+  });
   elements.jsonImportFile.addEventListener("change", () => importJsonFile(elements.jsonImportFile.files[0]));
   elements.csvImportFile.addEventListener("change", () => importCsvFile(elements.csvImportFile.files[0]));
   elements.pinDisplayMode.addEventListener("change", () => {
@@ -3073,6 +3297,7 @@
   map.on("click", (event) => openSpotDialog(event.latlng));
 
   loadSessions();
+  loadTagSettings();
   loadSettings();
   elements.sessionDate.value = todayText();
   if (state.activeSessionId) {
