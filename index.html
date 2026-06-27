@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>さけいちず v1.4.1</title>
+  <title>さけいちず v1.5</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="style.css">
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -14,7 +14,7 @@
     <div>
       <p class="eyebrow">地図と日記で残す飲み歩き記録</p>
       <h1>さけいちず</h1>
-      <p class="app-version">さけいちず v1.4.1</p>
+      <p class="app-version">さけいちず v1.5</p>
     </div>
     <button id="locateButton" class="button secondary locate-button" type="button">現在地を取得</button>
   </header>
@@ -65,6 +65,15 @@
         <label>
           自由タグ
           <textarea id="tags" rows="2" placeholder="例：地酒巡り, はしご酒&#10;カンマ・スペース・改行で追加できます"></textarea>
+        </label>
+        <div class="field-group condition-field">
+          <span class="field-label">翌日の体調</span>
+          <p class="input-help">体調管理・振り返り用です。飲み会当日は空欄のまま保存できます。</p>
+          <div id="nextDayConditionList" class="tag-checkbox-list condition-checkbox-list" aria-label="翌日の体調"></div>
+        </div>
+        <label>
+          体調メモ
+          <textarea id="nextDayConditionMemo" rows="2" placeholder="例：水を多めに飲んだので比較的楽だった"></textarea>
         </label>
         <button class="button primary" type="submit">飲み会を保存</button>
       </form>
@@ -141,6 +150,10 @@
           <div>
             <h3>飲み物杯数</h3>
             <div id="drinkCountStats" class="mini-list"></div>
+          </div>
+          <div>
+            <h3>翌日の体調</h3>
+            <div id="nextDayConditionStats" class="mini-list"></div>
           </div>
         </div>
       </details>
@@ -436,6 +449,6 @@
       </div>
     </div>
   </dialog>
-  <footer class="app-footer">さけいちず v1.4.1 / ローカル保存版</footer>
+  <footer class="app-footer">さけいちず v1.5 / ローカル保存版</footer>
 </body>
 </html>

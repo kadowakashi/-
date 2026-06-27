@@ -2,14 +2,16 @@
   const STORAGE_KEY = "nomichizu.records.v0.1";
   const SETTINGS_KEY = "sakeichizu.displaySettings.v0.4";
   const TAG_SETTINGS_KEY = "sakeichizu.tagSettings.v1.4";
-  const EXPORT_VERSION = "1.4.1";
+  const EXPORT_VERSION = "1.5";
   const AKITA_CITY = [39.7186, 140.1024];
   const MAX_PHOTOS_PER_SPOT = 3;
   const MAX_PHOTO_EDGE = 1280;
   const JPEG_QUALITY = 0.72;
   const SAKE_TYPES = ["日本酒", "ビール", "焼酎", "ワイン", "ウイスキー", "カクテル", "その他"];
   const DRINK_COUNT_TYPES = ["水", "ビール", "日本酒", "焼酎", "ワイン", "ウイスキー", "ハイボール", "カクテル", "サワー", "ソフトドリンク", "その他"];
+  const NEXT_DAY_CONDITION_OPTIONS = ["快調", "普通", "二日酔い", "頭痛", "吐き気", "胃もたれ", "眠気", "だるさ", "記憶あいまい", "水分不足感"];
   const NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse";
+  const GEOCODE_DEBOUNCE_MS = 650;
   const DEFAULT_AREAS = ["秋田駅前", "川反", "大町", "山王", "土崎", "能代", "仙台", "東京", "旅行先", "その他"];
   const REGION_TAGS = ["秋田駅前", "川反", "大町", "山王", "土崎", "能代", "仙台", "東京", "旅行先"];
   const DEFAULT_TAGS = [
@@ -52,6 +54,7 @@
     mapCandidate: null,
     geocodeRequestId: 0,
     geocodeAbortController: null,
+    geocodeDebounceTimer: null,
     geocodeCache: new Map()
   };
 
@@ -62,6 +65,8 @@
     companions: document.querySelector("#companions"),
     overallMemo: document.querySelector("#overallMemo"),
     totalCostMemo: document.querySelector("#totalCostMemo"),
+    nextDayConditionList: document.querySelector("#nextDayConditionList"),
+    nextDayConditionMemo: document.querySelector("#nextDayConditionMemo"),
     tags: document.querySelector("#tags"),
     tagCheckboxList: document.querySelector("#tagCheckboxList"),
     tagSettingsButton: document.querySelector("#tagSettingsButton"),
@@ -85,6 +90,7 @@
     sakeTypeStats: document.querySelector("#sakeTypeStats"),
     sakeRatingStats: document.querySelector("#sakeRatingStats"),
     drinkCountStats: document.querySelector("#drinkCountStats"),
+    nextDayConditionStats: document.querySelector("#nextDayConditionStats"),
     storageStats: document.querySelector("#storageStats"),
     dataCheckResults: document.querySelector("#dataCheckResults"),
     monthlyStatsList: document.querySelector("#monthlyStatsList"),
@@ -302,6 +308,55 @@
     return String(spot?.bestDish || spot?.foods || spot?.food || spot?.eatenItems || "").trim();
   }
 
+  function normalizeNextDayConditions(value) {
+    const source = Array.isArray(value) ? value : parseTags(value);
+    return [...new Set(source
+      .map((condition) => String(condition || "").trim())
+      .filter(Boolean))];
+  }
+
+  function nextDayConditionText(session, fallback = "未記入") {
+    const conditions = normalizeNextDayConditions(session?.nextDayCondition);
+    return conditions.length ? conditions.join("、") : fallback;
+  }
+
+  function nextDayConditionSummary(session, fallback = "未記入") {
+    const conditionText = nextDayConditionText(session, "");
+    const memo = String(session?.nextDayConditionMemo || "").trim();
+    if (conditionText && memo) {
+      return `${conditionText} / ${memo}`;
+    }
+    return conditionText || memo || fallback;
+  }
+
+  function selectedNextDayConditions() {
+    return [...elements.nextDayConditionList.querySelectorAll("input[type='checkbox']:checked")]
+      .map((input) => input.value)
+      .filter(Boolean);
+  }
+
+  function renderNextDayConditionCheckboxes(selectedConditions = []) {
+    const selected = new Set(normalizeNextDayConditions(selectedConditions));
+    elements.nextDayConditionList.innerHTML = NEXT_DAY_CONDITION_OPTIONS.map((condition) => `
+      <label class="tag-checkbox">
+        <input type="checkbox" value="${escapeHtml(condition)}" ${selected.has(condition) ? "checked" : ""}>
+        <span>${escapeHtml(condition)}</span>
+      </label>
+    `).join("");
+  }
+
+  function nextDayConditionCounts() {
+    const counts = new Map(NEXT_DAY_CONDITION_OPTIONS.map((condition) => [condition, 0]));
+    state.sessions.forEach((session) => {
+      normalizeNextDayConditions(session.nextDayCondition).forEach((condition) => {
+        counts.set(condition, (counts.get(condition) || 0) + 1);
+      });
+    });
+    return [...counts.entries()]
+      .map(([label, count]) => ({ label, count }))
+      .filter((item) => item.count > 0 || NEXT_DAY_CONDITION_OPTIONS.includes(item.label));
+  }
+
   function normalizeSpot(spot) {
     const source = spot && typeof spot === "object" ? spot : {};
     const lat = Number(source.lat);
@@ -347,6 +402,8 @@
       companions: String(source.companions || ""),
       overallMemo: String(source.overallMemo || ""),
       totalCostMemo: String(source.totalCostMemo || source.totalMemo || ""),
+      nextDayCondition: normalizeNextDayConditions(source.nextDayCondition),
+      nextDayConditionMemo: String(source.nextDayConditionMemo || ""),
       tags: parseTags(source.tags),
       spots: Array.isArray(source.spots)
         ? source.spots.map(normalizeSpot).filter((spot) => Number.isFinite(spot.lat) && Number.isFinite(spot.lng) && spot.name)
@@ -1019,6 +1076,10 @@
 
   function clearMapCandidate() {
     state.mapCandidate = null;
+    if (state.geocodeDebounceTimer) {
+      clearTimeout(state.geocodeDebounceTimer);
+      state.geocodeDebounceTimer = null;
+    }
     if (state.geocodeAbortController) {
       state.geocodeAbortController.abort();
       state.geocodeAbortController = null;
@@ -1033,6 +1094,46 @@
     }
   }
 
+  function applyMapCandidate(candidate, statusText) {
+    state.mapCandidate = candidate;
+    if (!elements.spotName.value.trim() && candidate.name) {
+      elements.spotName.value = candidate.name;
+    }
+    if (!elements.spotAddress.value.trim() && candidate.address) {
+      elements.spotAddress.value = candidate.address;
+    }
+    renderMapCandidate(statusText);
+  }
+
+  function scheduleMapCandidateFetch(latlng) {
+    const key = geocodeCacheKey(latlng);
+    state.mapCandidate = {
+      name: "",
+      address: "",
+      googleMapsUrl: googleMapsUrl(latlng.lat, latlng.lng)
+    };
+
+    if (state.geocodeDebounceTimer) {
+      clearTimeout(state.geocodeDebounceTimer);
+      state.geocodeDebounceTimer = null;
+    }
+    if (state.geocodeAbortController) {
+      state.geocodeAbortController.abort();
+      state.geocodeAbortController = null;
+    }
+
+    if (state.geocodeCache.has(key)) {
+      applyMapCandidate(state.geocodeCache.get(key), "近い地点の候補を表示しています。");
+      return;
+    }
+
+    renderMapCandidate("地図クリック地点の候補取得を準備しています。連続タップ時は最後の地点だけ取得します。");
+    state.geocodeDebounceTimer = window.setTimeout(() => {
+      state.geocodeDebounceTimer = null;
+      fetchMapCandidate(latlng);
+    }, GEOCODE_DEBOUNCE_MS);
+  }
+
   async function fetchMapCandidate(latlng) {
     const key = geocodeCacheKey(latlng);
     state.mapCandidate = {
@@ -1043,14 +1144,7 @@
     renderMapCandidate("地図クリック地点の候補を取得しています。");
 
     if (state.geocodeCache.has(key)) {
-      state.mapCandidate = state.geocodeCache.get(key);
-      if (!elements.spotName.value.trim() && state.mapCandidate.name) {
-        elements.spotName.value = state.mapCandidate.name;
-      }
-      if (!elements.spotAddress.value.trim() && state.mapCandidate.address) {
-        elements.spotAddress.value = state.mapCandidate.address;
-      }
-      renderMapCandidate("近い地点の候補を表示しています。");
+      applyMapCandidate(state.geocodeCache.get(key), "近い地点の候補を表示しています。");
       return;
     }
 
@@ -1083,14 +1177,7 @@
       }
       const candidate = candidateFromNominatim(data, latlng);
       state.geocodeCache.set(key, candidate);
-      state.mapCandidate = candidate;
-      if (!elements.spotName.value.trim() && candidate.name) {
-        elements.spotName.value = candidate.name;
-      }
-      if (!elements.spotAddress.value.trim() && candidate.address) {
-        elements.spotAddress.value = candidate.address;
-      }
-      renderMapCandidate(candidate.name || candidate.address ? "候補を取得しました。候補は不正確な場合があります。" : "候補を取得できませんでした。手入力で登録できます。");
+      applyMapCandidate(candidate, candidate.name || candidate.address ? "候補を取得しました。候補は不正確な場合があります。" : "候補を取得できませんでした。手入力で登録できます。");
     } catch (error) {
       if (error?.name === "AbortError") {
         return;
@@ -1158,6 +1245,8 @@
       session.companions,
       session.overallMemo,
       session.totalCostMemo,
+      ...normalizeNextDayConditions(session.nextDayCondition),
+      session.nextDayConditionMemo,
       ...(session.tags || []),
       ...session.spots.flatMap((spot) => [
         spot.order,
@@ -1208,6 +1297,8 @@
     elements.companions.value = session.companions || "";
     elements.overallMemo.value = session.overallMemo || "";
     elements.totalCostMemo.value = session.totalCostMemo || "";
+    elements.nextDayConditionMemo.value = session.nextDayConditionMemo || "";
+    renderNextDayConditionCheckboxes(session.nextDayCondition || []);
     setTagFormValues(session.tags || []);
   }
 
@@ -1217,6 +1308,8 @@
     elements.sessionDate.value = todayText();
     elements.blogDraft.value = "";
     elements.totalCostMemo.value = "";
+    elements.nextDayConditionMemo.value = "";
+    renderNextDayConditionCheckboxes([]);
     setTagFormValues([]);
     render();
   }
@@ -1239,6 +1332,8 @@
       companions: elements.companions.value.trim(),
       overallMemo: elements.overallMemo.value.trim(),
       totalCostMemo: elements.totalCostMemo.value.trim(),
+      nextDayCondition: selectedNextDayConditions(),
+      nextDayConditionMemo: elements.nextDayConditionMemo.value.trim(),
       tags: readSessionTagsFromForm()
     };
 
@@ -1313,7 +1408,7 @@
     elements.revisit.value = "はい";
     renderPhotoPreview();
     renderDrinkCountControls();
-    fetchMapCandidate(latlng);
+    scheduleMapCandidateFetch(latlng);
     setResponsiveSpotInputMode();
     elements.spotDialog.showModal();
     elements.spotName.focus();
@@ -1708,6 +1803,7 @@
       elements.sakeTypeStats.innerHTML = "";
       elements.sakeRatingStats.innerHTML = "";
       elements.drinkCountStats.innerHTML = "";
+      elements.nextDayConditionStats.innerHTML = "";
       return;
     }
 
@@ -1726,6 +1822,7 @@
       label: type,
       count: records.reduce((sum, { spot }) => sum + (normalizeDrinkCounts(spot.drinkCounts).find((item) => item.type === type)?.count || 0), 0)
     }));
+    const conditionCounts = nextDayConditionCounts();
 
     elements.summaryStats.innerHTML = [
       ["記録済み飲み会数", state.sessions.length],
@@ -1751,6 +1848,11 @@
         <div class="mini-row"><span>${escapeHtml(item.label)}</span><strong>${item.count}杯</strong></div>
       `).join("")
       : '<p class="empty">杯数カウントはまだありません。</p>';
+    elements.nextDayConditionStats.innerHTML = conditionCounts.some((item) => item.count > 0)
+      ? conditionCounts.map((item) => `
+        <div class="mini-row"><span>${escapeHtml(item.label)}</span><strong>${item.count}回</strong></div>
+      `).join("")
+      : '<p class="empty">翌日の体調記録はまだありません。</p>';
   }
 
   function renderBrandStats(records) {
@@ -2078,6 +2180,7 @@
     let missingAreaFields = 0;
     let missingMapFields = 0;
     let missingDrinkCountFields = 0;
+    let missingNextDayFields = 0;
     let invalidDrinkCountValues = 0;
     let missingRatingFields = 0;
     let invalidRatingValues = 0;
@@ -2110,6 +2213,11 @@
         });
         return;
       }
+      ["nextDayCondition", "nextDayConditionMemo"].forEach((field) => {
+        if (!Object.prototype.hasOwnProperty.call(session, field)) {
+          missingNextDayFields += 1;
+        }
+      });
 
       session.spots.forEach((spot, spotIndex) => {
         const spotLabel = `${session.title || "無題"} / ${spot?.name || `${spotIndex + 1}件目のスポット`}`;
@@ -2220,6 +2328,13 @@
       issues.push({
         level: "warning",
         text: `${missingDrinkCountFields}件のスポットで飲み物カウントがありません。空配列で補完できます。`,
+        autofixable: true
+      });
+    }
+    if (missingNextDayFields) {
+      issues.push({
+        level: "warning",
+        text: `翌日の体調項目の不足が${missingNextDayFields}項目あります。空欄で補完できます。`,
         autofixable: true
       });
     }
@@ -2347,6 +2462,8 @@
         companions: String(session.companions || ""),
         overallMemo: String(session.overallMemo || ""),
         totalCostMemo: String(session.totalCostMemo || session.totalMemo || ""),
+        nextDayCondition: normalizeNextDayConditions(session.nextDayCondition),
+        nextDayConditionMemo: String(session.nextDayConditionMemo || ""),
         tags: Array.isArray(session.tags) ? session.tags.map(String).filter(Boolean) : parseTags(session.tags),
         spots: Array.isArray(session.spots)
           ? session.spots.map(completedSpotForAutoFix)
@@ -2478,6 +2595,7 @@
         <div><span>スポット数</span><strong>${spots.length}件</strong></div>
       </div>
       <div class="tag-row">${tags.length ? tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("") : '<span class="tag">タグなし</span>'}</div>
+      <p class="meta">翌日の体調: ${escapeHtml(nextDayConditionSummary(session))}</p>
     `;
 
     elements.activeSpotList.innerHTML = spots.length
@@ -2576,6 +2694,7 @@
           </div>
           <p class="meta">${escapeHtml(session.overallMemo || "全体メモなし")}</p>
           <p class="meta">支払額合計: ${escapeHtml(formatYen(paymentTotal))}</p>
+          <p class="meta">翌日の体調: ${escapeHtml(nextDayConditionSummary(session))}</p>
           <div class="tag-row">${tags || '<span class="tag">タグなし</span>'}</div>
           <button class="small-button" type="button" data-action="select-session" data-session-id="${idAttr(session.id)}">この記録を編集</button>
           <div class="spot-list">${spots}</div>
@@ -2642,6 +2761,8 @@
       `同行者：${plain(session.companions, "同行者なし")}`,
       `支払額合計：${formatYen(sessionAmount(session))}`,
       `タグ：${session.tags.length ? session.tags.join("、") : "タグなし"}`,
+      `翌日の体調：${nextDayConditionText(session)}`,
+      `体調メモ：${plain(session.nextDayConditionMemo)}`,
       "",
       "## 全体メモ",
       plain(session.overallMemo),
@@ -2722,8 +2843,16 @@
     showStatus("写真を除外した軽量バックアップを書き出しました。", "success");
   }
 
+  function safeCsvCellText(value) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return String(value);
+    }
+    const text = String(value ?? "");
+    return /^[=+\-@]/.test(text) ? `'${text}` : text;
+  }
+
   function csvCell(value) {
-    return `"${String(value ?? "").replaceAll('"', '""')}"`;
+    return `"${safeCsvCellText(value).replaceAll('"', '""')}"`;
   }
 
   function buildCsvRows() {
@@ -2737,6 +2866,8 @@
       "総額メモ",
       "支払額合計",
       "タグ",
+      "翌日の体調",
+      "体調メモ",
       "スポット順番",
       "店名",
       "カテゴリ",
@@ -2780,6 +2911,8 @@
         session.totalCostMemo,
         sessionAmount(session),
         (session.tags || []).join("、"),
+        nextDayConditionText(session, ""),
+        session.nextDayConditionMemo || "",
         spot?.order || "",
         spot?.name || "",
         spot?.category || "",
@@ -2943,7 +3076,8 @@
   }
 
   function readCsvValue(record, header) {
-    return String(record[header] ?? "").trim();
+    const value = String(record[header] ?? "").trim();
+    return /^'[=+\-@]/.test(value) ? value.slice(1) : value;
   }
 
   function readCsvAnyValue(record, headers) {
@@ -2993,6 +3127,8 @@
           overallMemo: readCsvValue(record, "全体メモ"),
           totalCostMemo: readCsvValue(record, "総額メモ"),
           tags: parseTags(readCsvValue(record, "タグ")),
+          nextDayCondition: normalizeNextDayConditions(readCsvValue(record, "翌日の体調")),
+          nextDayConditionMemo: readCsvValue(record, "体調メモ"),
           spots: [],
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
@@ -3345,6 +3481,7 @@
   if (state.activeSessionId) {
     fillSessionForm(getActiveSession());
   } else {
+    renderNextDayConditionCheckboxes([]);
     setTagFormValues([]);
   }
   render();
