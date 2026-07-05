@@ -2,7 +2,9 @@
   const STORAGE_KEY = "nomichizu.records.v0.1";
   const SETTINGS_KEY = "sakeichizu.displaySettings.v0.4";
   const TAG_SETTINGS_KEY = "sakeichizu.tagSettings.v1.4";
-  const EXPORT_VERSION = "1.5";
+  const SESSION_DRAFT_KEY = "sakeichizu.sessionDraft.v1.6";
+  const SPOT_DRAFT_KEY = "sakeichizu.spotDraft.v1.6";
+  const EXPORT_VERSION = "1.6";
   const AKITA_CITY = [39.7186, 140.1024];
   const MAX_PHOTOS_PER_SPOT = 3;
   const MAX_PHOTO_EDGE = 1280;
@@ -12,6 +14,7 @@
   const NEXT_DAY_CONDITION_OPTIONS = ["快調", "普通", "二日酔い", "頭痛", "吐き気", "胃もたれ", "眠気", "だるさ", "記憶あいまい", "水分不足感"];
   const NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse";
   const GEOCODE_DEBOUNCE_MS = 650;
+  const DRAFT_SAVE_DELAY_MS = 700;
   const DEFAULT_AREAS = ["秋田駅前", "川反", "大町", "山王", "土崎", "能代", "仙台", "東京", "旅行先", "その他"];
   const REGION_TAGS = ["秋田駅前", "川反", "大町", "山王", "土崎", "能代", "仙台", "東京", "旅行先"];
   const DEFAULT_TAGS = [
@@ -55,7 +58,9 @@
     geocodeRequestId: 0,
     geocodeAbortController: null,
     geocodeDebounceTimer: null,
-    geocodeCache: new Map()
+    geocodeCache: new Map(),
+    sessionDraftTimer: null,
+    spotDraftTimer: null
   };
 
   const elements = {
@@ -67,6 +72,8 @@
     totalCostMemo: document.querySelector("#totalCostMemo"),
     nextDayConditionList: document.querySelector("#nextDayConditionList"),
     nextDayConditionMemo: document.querySelector("#nextDayConditionMemo"),
+    sessionDraftStatus: document.querySelector("#sessionDraftStatus"),
+    discardSessionDraftButton: document.querySelector("#discardSessionDraftButton"),
     tags: document.querySelector("#tags"),
     tagCheckboxList: document.querySelector("#tagCheckboxList"),
     tagSettingsButton: document.querySelector("#tagSettingsButton"),
@@ -125,6 +132,8 @@
     closeSpotDialog: document.querySelector("#closeSpotDialog"),
     simpleSpotModeButton: document.querySelector("#simpleSpotModeButton"),
     detailSpotModeButton: document.querySelector("#detailSpotModeButton"),
+    spotDraftStatus: document.querySelector("#spotDraftStatus"),
+    discardSpotDraftButton: document.querySelector("#discardSpotDraftButton"),
     areaOptions: document.querySelector("#areaOptions"),
     mergeFromArea: document.querySelector("#mergeFromArea"),
     mergeToArea: document.querySelector("#mergeToArea"),
@@ -496,6 +505,236 @@
     }
   }
 
+  function updateDraftStatus(element, message, type = "info") {
+    if (!element) {
+      return;
+    }
+    element.textContent = message;
+    element.className = `draft-status ${type}`;
+  }
+
+  function draftTimeText() {
+    return new Date().toLocaleTimeString("ja-JP", {
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+  }
+
+  function loadDraft(key) {
+    try {
+      const text = localStorage.getItem(key);
+      if (!text) {
+        return null;
+      }
+      const draft = JSON.parse(text);
+      return draft && typeof draft === "object" ? draft : null;
+    } catch (error) {
+      showStatus("下書きデータを読み込めませんでした。必要に応じて下書きを破棄してください。", "warning");
+      return null;
+    }
+  }
+
+  function clearSessionDraft(showMessage = true) {
+    window.clearTimeout(state.sessionDraftTimer);
+    state.sessionDraftTimer = null;
+    try {
+      localStorage.removeItem(SESSION_DRAFT_KEY);
+      updateDraftStatus(elements.sessionDraftStatus, "飲み会下書きはありません。");
+      if (showMessage) {
+        showStatus("飲み会下書きを破棄しました。", "info");
+      }
+    } catch (error) {
+      showStatus("飲み会下書きの削除に失敗しました。ブラウザの保存設定を確認してください。", "warning");
+    }
+  }
+
+  function clearSpotDraft(showMessage = true) {
+    window.clearTimeout(state.spotDraftTimer);
+    state.spotDraftTimer = null;
+    try {
+      localStorage.removeItem(SPOT_DRAFT_KEY);
+      updateDraftStatus(elements.spotDraftStatus, "スポット下書きはありません。");
+      if (showMessage) {
+        showStatus("スポット下書きを破棄しました。", "info");
+      }
+    } catch (error) {
+      showStatus("スポット下書きの削除に失敗しました。ブラウザの保存設定を確認してください。", "warning");
+    }
+  }
+
+  function collectSessionDraft() {
+    return {
+      date: elements.sessionDate.value,
+      title: elements.sessionTitle.value,
+      companions: elements.companions.value,
+      overallMemo: elements.overallMemo.value,
+      totalCostMemo: elements.totalCostMemo.value,
+      selectedTags: selectedTagCheckboxValues(),
+      freeTags: elements.tags.value,
+      tags: readSessionTagsFromForm(),
+      nextDayCondition: selectedNextDayConditions(),
+      nextDayConditionMemo: elements.nextDayConditionMemo.value,
+      activeSessionId: state.activeSessionId,
+      savedAt: new Date().toISOString()
+    };
+  }
+
+  function saveSessionDraft() {
+    try {
+      localStorage.setItem(SESSION_DRAFT_KEY, JSON.stringify(collectSessionDraft()));
+      updateDraftStatus(elements.sessionDraftStatus, `飲み会下書き保存済み ${draftTimeText()}`, "success");
+    } catch (error) {
+      updateDraftStatus(elements.sessionDraftStatus, "飲み会下書きの保存に失敗しました。", "warning");
+      showStatus("飲み会下書きの保存に失敗しました。ブラウザの保存容量やプライベートモードの設定を確認してください。", "warning");
+    }
+  }
+
+  function scheduleSessionDraftSave() {
+    window.clearTimeout(state.sessionDraftTimer);
+    updateDraftStatus(elements.sessionDraftStatus, "飲み会下書きを保存中...", "info");
+    state.sessionDraftTimer = window.setTimeout(saveSessionDraft, DRAFT_SAVE_DELAY_MS);
+  }
+
+  function restoreSessionDraft(draft) {
+    elements.sessionDate.value = draft.date || todayText();
+    elements.sessionTitle.value = String(draft.title || "");
+    elements.companions.value = String(draft.companions || "");
+    elements.overallMemo.value = String(draft.overallMemo || "");
+    elements.totalCostMemo.value = String(draft.totalCostMemo || "");
+    elements.nextDayConditionMemo.value = String(draft.nextDayConditionMemo || "");
+    renderNextDayConditionCheckboxes(draft.nextDayCondition || []);
+    renderTagCheckboxes(draft.selectedTags || draft.tags || []);
+    elements.tags.value = String(draft.freeTags || "");
+    updateDraftStatus(elements.sessionDraftStatus, "前回の飲み会下書きを復元しました。", "success");
+  }
+
+  function promptRestoreSessionDraft() {
+    const draft = loadDraft(SESSION_DRAFT_KEY);
+    if (!draft) {
+      updateDraftStatus(elements.sessionDraftStatus, "飲み会下書きはありません。");
+      return;
+    }
+    if (confirm("前回の飲み会入力途中データがあります。復元しますか？\nキャンセルすると下書きを破棄します。")) {
+      restoreSessionDraft(draft);
+      showStatus("飲み会下書きを復元しました。正式保存するまで記録データは上書きされません。", "success");
+      return;
+    }
+    clearSessionDraft(true);
+  }
+
+  function collectSpotDraft() {
+    return {
+      editingSpotId: state.editingSpotId || "",
+      activeSessionId: state.activeSessionId || "",
+      spotInputMode: state.spotInputMode,
+      lat: elements.spotLat.value,
+      lng: elements.spotLng.value,
+      order: elements.spotOrder.value,
+      category: elements.spotCategory.value,
+      area: elements.spotArea.value,
+      name: elements.spotName.value,
+      address: elements.spotAddress.value,
+      mapCandidate: {
+        name: String(state.mapCandidate?.name || ""),
+        address: String(state.mapCandidate?.address || "")
+      },
+      drinkCounts: normalizeDrinkCounts(state.editingDrinkCounts),
+      drinks: elements.drinks.value,
+      sakeType: elements.sakeType.value,
+      sakeBrand: elements.sakeBrand.value,
+      sakeMaker: elements.sakeMaker.value,
+      sakeTaste: elements.sakeTaste.value,
+      sakeRating: elements.sakeRating.value,
+      drinkAgain: elements.drinkAgain.value,
+      sakeMemo: elements.sakeMemo.value,
+      foods: elements.foods.value,
+      cost: elements.spotCost.value,
+      rating: elements.rating.value,
+      revisit: elements.revisit.value,
+      memo: elements.spotMemo.value,
+      photoCaptions: normalizePhotos(state.editingPhotos).map(photoCaption),
+      savedAt: new Date().toISOString()
+    };
+  }
+
+  function saveSpotDraft() {
+    try {
+      localStorage.setItem(SPOT_DRAFT_KEY, JSON.stringify(collectSpotDraft()));
+      updateDraftStatus(elements.spotDraftStatus, `スポット下書き保存済み ${draftTimeText()}`, "success");
+    } catch (error) {
+      updateDraftStatus(elements.spotDraftStatus, "スポット下書きの保存に失敗しました。", "warning");
+      showStatus("スポット下書きの保存に失敗しました。写真本体は下書き対象外ですが、保存容量やブラウザ設定を確認してください。", "warning");
+    }
+  }
+
+  function scheduleSpotDraftSave() {
+    if (!elements.spotDialog.open) {
+      return;
+    }
+    window.clearTimeout(state.spotDraftTimer);
+    updateDraftStatus(elements.spotDraftStatus, "スポット下書きを保存中...", "info");
+    state.spotDraftTimer = window.setTimeout(saveSpotDraft, DRAFT_SAVE_DELAY_MS);
+  }
+
+  function restoreSpotDraft(draft) {
+    const lat = Number(draft.lat);
+    const lng = Number(draft.lng);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      elements.spotLat.value = lat.toFixed(6);
+      elements.spotLng.value = lng.toFixed(6);
+      state.pendingLatLng = { lat, lng };
+    }
+    elements.spotOrder.value = String(draft.order || elements.spotOrder.value || "");
+    elements.spotCategory.value = String(draft.category || elements.spotCategory.value || "その他");
+    elements.spotArea.value = String(draft.area || "");
+    elements.spotName.value = String(draft.name || "");
+    elements.spotAddress.value = String(draft.address || "");
+    elements.drinks.value = String(draft.drinks || "");
+    state.editingDrinkCounts = normalizeDrinkCounts(draft.drinkCounts);
+    elements.sakeType.value = String(draft.sakeType || "");
+    elements.sakeBrand.value = String(draft.sakeBrand || "");
+    elements.sakeMaker.value = String(draft.sakeMaker || "");
+    elements.sakeTaste.value = String(draft.sakeTaste || "");
+    elements.sakeRating.value = String(draft.sakeRating || "");
+    elements.drinkAgain.value = String(draft.drinkAgain || "");
+    elements.sakeMemo.value = String(draft.sakeMemo || "");
+    elements.foods.value = String(draft.foods || "");
+    elements.spotCost.value = String(draft.cost || "");
+    elements.rating.value = ratingRank(draft.rating, "B");
+    elements.revisit.value = String(draft.revisit || "はい");
+    elements.spotMemo.value = String(draft.memo || "");
+    state.mapCandidate = {
+      name: String(draft.mapCandidate?.name || ""),
+      address: String(draft.mapCandidate?.address || draft.address || ""),
+      googleMapsUrl: googleMapsUrl(elements.spotLat.value, elements.spotLng.value)
+    };
+    state.editingPhotos.forEach((photo, index) => {
+      if (draft.photoCaptions?.[index] !== undefined) {
+        photo.caption = String(draft.photoCaptions[index] || "").slice(0, 80);
+      }
+    });
+    renderDrinkCountControls();
+    renderPhotoPreview();
+    renderMapCandidate("前回のスポット下書きを復元しました。候補は古い/不正確な場合があります。");
+    setSpotInputMode(draft.spotInputMode === "simple" ? "simple" : "detail");
+    updateDraftStatus(elements.spotDraftStatus, "前回のスポット下書きを復元しました。", "success");
+  }
+
+  function promptRestoreSpotDraft() {
+    const draft = loadDraft(SPOT_DRAFT_KEY);
+    if (!draft) {
+      updateDraftStatus(elements.spotDraftStatus, "スポット下書きはありません。");
+      return false;
+    }
+    if (confirm("前回のスポット入力途中データがあります。復元しますか？\nキャンセルすると下書きを破棄します。写真本体は下書きに含まれません。")) {
+      restoreSpotDraft(draft);
+      showStatus("スポット下書きを復元しました。写真本体は正式保存済みのものだけ扱います。", "success");
+      return true;
+    }
+    clearSpotDraft(true);
+    return false;
+  }
+
   function getActiveSession() {
     return state.sessions.find((session) => session.id === state.activeSessionId) || null;
   }
@@ -733,6 +972,7 @@
         state.editingPhotos.push(compressed);
       }
       renderPhotoPreview();
+      scheduleSpotDraftSave();
       const summary = storageSummary();
       showStatus(
         summary.bytes >= 3 * 1024 * 1024 || summary.photoCount >= 10
@@ -1066,7 +1306,7 @@
     }
     const candidate = state.mapCandidate || {};
     elements.mapCandidatePanel.hidden = false;
-    elements.mapCandidateStatus.textContent = statusText || (candidate.name || candidate.address ? "候補を取得しました。必要に応じて修正してください。" : "候補は未取得です。手入力できます。");
+    elements.mapCandidateStatus.textContent = statusText || (candidate.name || candidate.address ? "候補を取得しました。古い/不正確な場合があるため、必要に応じてGoogleマップで確認して修正してください。" : "候補は未取得です。Googleマップで確認しながら手入力できます。");
     elements.mapCandidateName.textContent = candidate.name || "未取得";
     elements.mapCandidateAddress.textContent = candidate.address || "未取得";
     elements.applyCandidateNameButton.disabled = !candidate.name;
@@ -1103,6 +1343,7 @@
       elements.spotAddress.value = candidate.address;
     }
     renderMapCandidate(statusText);
+    scheduleSpotDraftSave();
   }
 
   function scheduleMapCandidateFetch(latlng) {
@@ -1123,11 +1364,11 @@
     }
 
     if (state.geocodeCache.has(key)) {
-      applyMapCandidate(state.geocodeCache.get(key), "近い地点の候補を表示しています。");
+      applyMapCandidate(state.geocodeCache.get(key), "近い地点の候補を表示しています。古い/不正確な場合があります。");
       return;
     }
 
-    renderMapCandidate("地図クリック地点の候補取得を準備しています。連続タップ時は最後の地点だけ取得します。");
+    renderMapCandidate("地図クリック地点の候補取得を準備しています。連続タップ時は最後の地点だけ取得します。候補が古い場合はGoogleマップで確認してください。");
     state.geocodeDebounceTimer = window.setTimeout(() => {
       state.geocodeDebounceTimer = null;
       fetchMapCandidate(latlng);
@@ -1141,10 +1382,10 @@
       address: "",
       googleMapsUrl: googleMapsUrl(latlng.lat, latlng.lng)
     };
-    renderMapCandidate("地図クリック地点の候補を取得しています。");
+    renderMapCandidate("地図クリック地点の候補を取得しています。取得後もGoogleマップで店名確認できます。");
 
     if (state.geocodeCache.has(key)) {
-      applyMapCandidate(state.geocodeCache.get(key), "近い地点の候補を表示しています。");
+      applyMapCandidate(state.geocodeCache.get(key), "近い地点の候補を表示しています。古い/不正確な場合があります。");
       return;
     }
 
@@ -1177,7 +1418,7 @@
       }
       const candidate = candidateFromNominatim(data, latlng);
       state.geocodeCache.set(key, candidate);
-      applyMapCandidate(candidate, candidate.name || candidate.address ? "候補を取得しました。候補は不正確な場合があります。" : "候補を取得できませんでした。手入力で登録できます。");
+      applyMapCandidate(candidate, candidate.name || candidate.address ? "候補を取得しました。候補は古い/不正確な場合があります。Googleマップで確認してから入力してください。" : "候補を取得できませんでした。Googleマップで確認しながら手入力できます。");
     } catch (error) {
       if (error?.name === "AbortError") {
         return;
@@ -1187,7 +1428,7 @@
         address: "",
         googleMapsUrl: googleMapsUrl(latlng.lat, latlng.lng)
       };
-      renderMapCandidate("通信に失敗しました。手入力で登録できます。");
+      renderMapCandidate("通信に失敗しました。Googleマップで確認しながら手入力できます。");
       showStatus("場所候補を取得できませんでした。通信状況を確認し、必要なら手入力してください。", "warning");
     } finally {
       if (requestId === state.geocodeRequestId) {
@@ -1366,6 +1607,7 @@
     addTagsToCandidates(payload.tags);
     setTagFormValues(payload.tags);
     renderTagSettingsList();
+    clearSessionDraft(false);
     render();
     showStatus("飲み会記録を保存しました。地図をクリックしてスポットを追加できます。");
   }
@@ -1384,7 +1626,7 @@
   }
 
   function setResponsiveSpotInputMode() {
-    setSpotInputMode(shouldUseSimpleSpotMode() ? "simple" : "detail");
+    setSpotInputMode("detail");
   }
 
   function openSpotDialog(latlng) {
@@ -1408,9 +1650,11 @@
     elements.revisit.value = "はい";
     renderPhotoPreview();
     renderDrinkCountControls();
-    scheduleMapCandidateFetch(latlng);
     setResponsiveSpotInputMode();
     elements.spotDialog.showModal();
+    if (!promptRestoreSpotDraft()) {
+      scheduleMapCandidateFetch(latlng);
+    }
     elements.spotName.focus();
   }
 
@@ -1460,6 +1704,7 @@
     render();
     setResponsiveSpotInputMode();
     elements.spotDialog.showModal();
+    promptRestoreSpotDraft();
     elements.spotName.focus();
   }
 
@@ -1543,6 +1788,7 @@
       state.sessions = JSON.parse(previousSessions);
       return;
     }
+    clearSpotDraft(false);
     elements.spotDialog.close();
     state.editingSpotId = null;
     render();
@@ -1681,17 +1927,27 @@
     }, 4200);
   }
 
+  function scrollToMap() {
+    document.querySelector("#map")?.scrollIntoView({
+      behavior: "smooth",
+      block: "center"
+    });
+    requestAnimationFrame(() => map.invalidateSize());
+  }
+
   function locateUser() {
     if (!navigator.geolocation) {
       showStatus("このブラウザでは現在地取得を利用できません。", "error");
       return;
     }
 
-    showStatus("現在地を取得しています。");
+    scrollToMap();
+    showStatus("現在地を取得しています。ブラウザの位置情報許可が必要です。");
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const latlng = [position.coords.latitude, position.coords.longitude];
         map.setView(latlng, 16);
+        scrollToMap();
         L.circleMarker(latlng, {
           radius: 8,
           color: "#1e6d74",
@@ -1701,8 +1957,15 @@
         }).addTo(map).bindPopup("現在地").openPopup();
         showStatus("現在地を表示しました。", "success");
       },
-      () => {
-        showStatus("現在地を取得できませんでした。ブラウザの位置情報設定を確認してください。", "error");
+      (error) => {
+        const message = error?.code === 1
+          ? "現在地を取得できませんでした。ブラウザまたは端末の位置情報許可を確認してください。"
+          : error?.code === 2
+            ? "現在地を取得できませんでした。電波状況や位置情報サービスの設定を確認してください。"
+            : error?.code === 3
+              ? "現在地取得がタイムアウトしました。少し待ってからもう一度試してください。"
+              : "現在地を取得できませんでした。ブラウザの位置情報設定を確認してください。";
+        showStatus(message, "error");
       },
       {
         enableHighAccuracy: true,
@@ -3299,6 +3562,9 @@
   }
 
   elements.sessionForm.addEventListener("submit", handleSessionSubmit);
+  elements.sessionForm.addEventListener("input", scheduleSessionDraftSave);
+  elements.sessionForm.addEventListener("change", scheduleSessionDraftSave);
+  elements.discardSessionDraftButton.addEventListener("click", () => clearSessionDraft(true));
   elements.newSessionButton.addEventListener("click", resetSessionForm);
   elements.locateButton.addEventListener("click", locateUser);
   elements.generateBlogButton.addEventListener("click", generateBlogDraft);
@@ -3360,6 +3626,7 @@
         elements.spotAddress.value = state.mapCandidate.address;
       }
       showStatus("候補名を店名欄に反映しました。", "success");
+      scheduleSpotDraftSave();
     }
   });
   elements.drinkCountControls.addEventListener("click", (event) => {
@@ -3376,6 +3643,7 @@
       setDrinkCountValue(type, current - 1);
     }
     renderDrinkCountControls();
+    scheduleSpotDraftSave();
   });
   elements.drinkCountControls.addEventListener("change", (event) => {
     const checkbox = event.target.closest("input[data-action='toggle-drink-count']");
@@ -3384,6 +3652,7 @@
     }
     setDrinkCountValue(checkbox.dataset.drinkType, checkbox.checked ? Math.max(1, drinkCountValue(checkbox.dataset.drinkType)) : 0);
     renderDrinkCountControls();
+    scheduleSpotDraftSave();
   });
   elements.photoInput.addEventListener("change", () => handlePhotoFiles(elements.photoInput.files));
   elements.photoPreviewList.addEventListener("click", (event) => {
@@ -3402,6 +3671,7 @@
       [state.editingPhotos[index], state.editingPhotos[index + 1]] = [state.editingPhotos[index + 1], state.editingPhotos[index]];
     }
     renderPhotoPreview();
+    scheduleSpotDraftSave();
   });
   elements.photoPreviewList.addEventListener("input", (event) => {
     const input = event.target.closest("input[data-action='update-photo-caption']");
@@ -3412,6 +3682,7 @@
     if (state.editingPhotos[index]) {
       state.editingPhotos[index].caption = input.value.slice(0, 80);
       updatePhotoStorageHint();
+      scheduleSpotDraftSave();
     }
   });
   elements.closePhotoViewer.addEventListener("click", () => elements.photoViewer.close());
@@ -3422,9 +3693,18 @@
       elements.photoViewer.close();
     }
   });
-  elements.simpleSpotModeButton.addEventListener("click", () => setSpotInputMode("simple"));
-  elements.detailSpotModeButton.addEventListener("click", () => setSpotInputMode("detail"));
+  elements.simpleSpotModeButton.addEventListener("click", () => {
+    setSpotInputMode("simple");
+    scheduleSpotDraftSave();
+  });
+  elements.detailSpotModeButton.addEventListener("click", () => {
+    setSpotInputMode("detail");
+    scheduleSpotDraftSave();
+  });
   elements.spotForm.addEventListener("submit", handleSpotSubmit);
+  elements.spotForm.addEventListener("input", scheduleSpotDraftSave);
+  elements.spotForm.addEventListener("change", scheduleSpotDraftSave);
+  elements.discardSpotDraftButton.addEventListener("click", () => clearSpotDraft(true));
   elements.closeSpotDialog.addEventListener("click", () => {
     elements.spotDialog.close();
     state.editingSpotId = null;
@@ -3484,5 +3764,6 @@
     renderNextDayConditionCheckboxes([]);
     setTagFormValues([]);
   }
+  promptRestoreSessionDraft();
   render();
 }());

@@ -202,6 +202,30 @@ h2 {
   font-size: 1rem;
 }
 
+.candidate-warning {
+  margin: 0;
+  padding: 8px 9px;
+  border: 1px solid rgba(155, 61, 34, 0.28);
+  border-radius: 6px;
+  color: #6f2b1b;
+  background: #fff1e8;
+  font-size: 0.86rem;
+  font-weight: 800;
+  line-height: 1.5;
+}
+
+.primary-candidate-action {
+  margin: 0;
+}
+
+.map-check-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding-inline: 18px;
+}
+
 .candidate-line {
   margin: 0;
   color: var(--muted);
@@ -456,6 +480,33 @@ textarea:focus {
   gap: 10px;
 }
 
+.draft-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px dashed rgba(192, 139, 53, 0.58);
+  border-radius: 8px;
+  background: #fffaf1;
+}
+
+.draft-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
+.draft-status.success {
+  color: var(--moss);
+}
+
+.draft-status.warning {
+  color: #7c2016;
+}
+
 .draft-area {
   min-height: 220px;
   line-height: 1.65;
@@ -478,10 +529,32 @@ textarea:focus {
   border-radius: 8px;
 }
 
+.map-primary-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 253, 248, 0.96);
+}
+
+.map-primary-actions .locate-button {
+  min-width: 180px;
+}
+
+.map-permission-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
 .map-controls {
   position: absolute;
   z-index: 820;
-  top: 12px;
+  top: 94px;
   right: 12px;
   display: grid;
   gap: 10px;
@@ -1216,6 +1289,17 @@ textarea:focus {
   .locate-button {
     min-height: 58px;
     font-size: 1.05rem;
+  }
+
+  .map-primary-actions,
+  .draft-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .map-primary-actions .locate-button {
+    width: 100%;
+    min-width: 0;
   }
 
   #sessionHint {
